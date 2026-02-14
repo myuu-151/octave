@@ -68,7 +68,7 @@ void Spline3D::Create()
     Node3D::Create();
     SetName("Spline");
 
-    EnsureLinkSlots((uint32_t)glm::clamp<int32_t>(mGeneratedLinkCount, 1, 64));
+    EnsureLinkSlots((uint32_t)glm::clamp(mGeneratedLinkCount, 1, 64));
 
     // Create initial point
     Box3D* p1 = CreateChild<Box3D>("point1");
@@ -84,7 +84,7 @@ void Spline3D::Start()
     Node3D::Start();
     mTravel = 0.0f;
 
-    mGeneratedLinkCount = glm::clamp<int32_t>(mGeneratedLinkCount, 1, 64);
+    mGeneratedLinkCount = glm::clamp(mGeneratedLinkCount, 1, 64);
     EnsureLinkSlots((uint32_t)mGeneratedLinkCount);
 
     Node* root = GetWorld() ? GetWorld()->GetRootNode() : nullptr;
@@ -217,7 +217,7 @@ bool Spline3D::IsPaused() const
 
 void Spline3D::EnsureLinkSlots(uint32_t count)
 {
-    count = glm::clamp<uint32_t>(count, 1u, 64u);
+    count = glm::clamp(count, 1u, 64u);
     mLinks.resize(count);
     mGeneratedLinkCount = (int32_t)count;
 }
@@ -1169,7 +1169,7 @@ void Spline3D::LoadStream(Stream& stream, Platform platform, uint32_t version)
     if (stream.GetPos() < stream.GetSize())
     {
         uint32_t linkCount = stream.ReadUint32();
-        linkCount = glm::clamp<uint32_t>(linkCount, 1u, 64u);
+        linkCount = glm::clamp(linkCount, 1u, 64u);
         mLinks.clear();
         mLinks.resize(linkCount);
         mGeneratedLinkCount = (int32_t)linkCount;
@@ -1199,7 +1199,37 @@ void Spline3D::LoadStream(Stream& stream, Platform platform, uint32_t version)
     }
     else
     {
-        EnsureLinkSlots((uint32_t)glm::clamp<int32_t>(mGeneratedLinkCount, 1, 64));
+        EnsureLinkSlots((uint32_t)glm::clamp(mGeneratedLinkCount, 1, 64));
+    }
+
+    // Optional extension block for per-point smooth settings.
+    if (stream.GetPos() < stream.GetSize())
+    {
+        const uint32_t marker = stream.ReadUint32();
+        const uint32_t kPointSmoothMarker = 0x50534D54; // "PSMT"
+        if (marker == kPointSmoothMarker && stream.GetPos() < stream.GetSize())
+        {
+            uint32_t smoothCount = stream.ReadUint32();
+            for (uint32_t i = 0; i < smoothCount; ++i)
+            {
+                std::string name;
+                stream.ReadString(name);
+                bool smoothIn = stream.ReadBool();
+                bool smoothOut = stream.ReadBool();
+                bool smoothCurve = stream.ReadBool();
+
+                for (uint32_t j = 0; j < mPointSpeedEntries.size(); ++j)
+                {
+                    if (mPointSpeedEntries[j].name == name)
+                    {
+                        mPointSpeedEntries[j].smoothIn = smoothIn;
+                        mPointSpeedEntries[j].smoothOut = smoothOut;
+                        mPointSpeedEntries[j].smoothCurve = smoothCurve;
+                        break;
+                    }
+                }
+            }
+        }
     }
 
     // Optional extension block for per-point smooth settings.
@@ -1237,7 +1267,7 @@ void Spline3D::GatherProperties(std::vector<Property>& props)
 {
     Node3D::GatherProperties(props);
 
-    mGeneratedLinkCount = glm::clamp<int32_t>(mGeneratedLinkCount, 1, 64);
+    mGeneratedLinkCount = glm::clamp(mGeneratedLinkCount, 1, 64);
     EnsureLinkSlots((uint32_t)mGeneratedLinkCount);
 
     {
@@ -1271,7 +1301,7 @@ void Spline3D::GatherProperties(std::vector<Property>& props)
 
     {
         SCOPED_CATEGORY("Spline Linking");
-        mGeneratedLinkCount = glm::clamp<int32_t>(mGeneratedLinkCount, 1, 64);
+        mGeneratedLinkCount = glm::clamp(mGeneratedLinkCount, 1, 64);
         EnsureLinkSlots((uint32_t)mGeneratedLinkCount);
 
         props.push_back(Property(DatumType::Bool, "Generate Link", this, &sGenerateLink11));
