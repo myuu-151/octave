@@ -1404,6 +1404,32 @@ bool Spline3D::HandlePropChange(Datum* datum, uint32_t index, const void* newVal
     Spline3D* spline = static_cast<Spline3D*>(prop->mOwner);
     bool success = false;
 
+    auto findPointEntry = [&](const std::string& name) -> Spline3D::PointSpeedEntry*
+    {
+        for (uint32_t i = 0; i < spline->mPointSpeedEntries.size(); ++i)
+        {
+            if (spline->mPointSpeedEntries[i].name == name)
+                return &spline->mPointSpeedEntries[i];
+        }
+        return nullptr;
+    };
+
+    auto getOrCreatePointEntry = [&](const std::string& name) -> Spline3D::PointSpeedEntry&
+    {
+        Spline3D::PointSpeedEntry* existing = findPointEntry(name);
+        if (existing)
+            return *existing;
+
+        Spline3D::PointSpeedEntry entry;
+        entry.name = name;
+        entry.speed = spline->mPointSpeedValue;
+        entry.smoothIn = spline->mPointSmoothInValue;
+        entry.smoothOut = spline->mPointSmoothOutValue;
+        entry.smoothCurve = spline->mPointSmoothCurveValue;
+        spline->mPointSpeedEntries.push_back(entry);
+        return spline->mPointSpeedEntries.back();
+    };
+
     if (prop->mName == "Camera")
     {
         const WeakPtr<Node>& newNode = *(const WeakPtr<Node>*)newValue;
@@ -1634,36 +1660,22 @@ bool Spline3D::HandlePropChange(Datum* datum, uint32_t index, const void* newVal
         {
             spline->mPointSpeedTarget = newNode;
 
-            // Load existing speed/smooth settings for this point (or default)
+            // Load existing speed/smooth settings for this point (or create defaults)
             const std::string& name = node->GetName();
-            bool found = false;
-            for (uint32_t i = 0; i < spline->mPointSpeedEntries.size(); ++i)
+            Spline3D::PointSpeedEntry* existing = findPointEntry(name);
+            if (!existing)
             {
-                if (spline->mPointSpeedEntries[i].name == name)
-                {
-                    spline->mPointSpeedValue = spline->mPointSpeedEntries[i].speed;
-                    spline->mPointSmoothInValue = spline->mPointSpeedEntries[i].smoothIn;
-                    spline->mPointSmoothOutValue = spline->mPointSpeedEntries[i].smoothOut;
-                    spline->mPointSmoothCurveValue = spline->mPointSpeedEntries[i].smoothCurve;
-                    found = true;
-                    break;
-                }
+                spline->mPointSpeedValue = 1.0f;
+                spline->mPointSmoothInValue = false;
+                spline->mPointSmoothOutValue = false;
+                spline->mPointSmoothCurveValue = false;
+                existing = &getOrCreatePointEntry(name);
             }
-            if (!found)
-            {
-                Spline3D::PointSpeedEntry entry;
-                entry.name = name;
-                entry.speed = 1.0f;
-                entry.smoothIn = false;
-                entry.smoothOut = false;
-                entry.smoothCurve = false;
-                spline->mPointSpeedEntries.push_back(entry);
 
-                spline->mPointSpeedValue = entry.speed;
-                spline->mPointSmoothInValue = entry.smoothIn;
-                spline->mPointSmoothOutValue = entry.smoothOut;
-                spline->mPointSmoothCurveValue = entry.smoothCurve;
-            }
+            spline->mPointSpeedValue = existing->speed;
+            spline->mPointSmoothInValue = existing->smoothIn;
+            spline->mPointSmoothOutValue = existing->smoothOut;
+            spline->mPointSmoothCurveValue = existing->smoothCurve;
 
             success = false;
         }
@@ -1681,26 +1693,8 @@ bool Spline3D::HandlePropChange(Datum* datum, uint32_t index, const void* newVal
         if (node)
         {
             const std::string& name = node->GetName();
-            bool found = false;
-            for (uint32_t i = 0; i < spline->mPointSpeedEntries.size(); ++i)
-            {
-                if (spline->mPointSpeedEntries[i].name == name)
-                {
-                    spline->mPointSpeedEntries[i].speed = value;
-                    found = true;
-                    break;
-                }
-            }
-            if (!found)
-            {
-                Spline3D::PointSpeedEntry entry;
-                entry.name = name;
-                entry.speed = value;
-                entry.smoothIn = spline->mPointSmoothInValue;
-                entry.smoothOut = spline->mPointSmoothOutValue;
-                entry.smoothCurve = spline->mPointSmoothCurveValue;
-                spline->mPointSpeedEntries.push_back(entry);
-            }
+            Spline3D::PointSpeedEntry& entry = getOrCreatePointEntry(name);
+            entry.speed = value;
         }
 
         success = false;
@@ -1714,26 +1708,8 @@ bool Spline3D::HandlePropChange(Datum* datum, uint32_t index, const void* newVal
         if (node)
         {
             const std::string& name = node->GetName();
-            bool found = false;
-            for (uint32_t i = 0; i < spline->mPointSpeedEntries.size(); ++i)
-            {
-                if (spline->mPointSpeedEntries[i].name == name)
-                {
-                    spline->mPointSpeedEntries[i].smoothIn = value;
-                    found = true;
-                    break;
-                }
-            }
-            if (!found)
-            {
-                Spline3D::PointSpeedEntry entry;
-                entry.name = name;
-                entry.speed = spline->mPointSpeedValue;
-                entry.smoothIn = value;
-                entry.smoothOut = spline->mPointSmoothOutValue;
-                entry.smoothCurve = spline->mPointSmoothCurveValue;
-                spline->mPointSpeedEntries.push_back(entry);
-            }
+            Spline3D::PointSpeedEntry& entry = getOrCreatePointEntry(name);
+            entry.smoothIn = value;
         }
 
         success = false;
@@ -1747,26 +1723,8 @@ bool Spline3D::HandlePropChange(Datum* datum, uint32_t index, const void* newVal
         if (node)
         {
             const std::string& name = node->GetName();
-            bool found = false;
-            for (uint32_t i = 0; i < spline->mPointSpeedEntries.size(); ++i)
-            {
-                if (spline->mPointSpeedEntries[i].name == name)
-                {
-                    spline->mPointSpeedEntries[i].smoothOut = value;
-                    found = true;
-                    break;
-                }
-            }
-            if (!found)
-            {
-                Spline3D::PointSpeedEntry entry;
-                entry.name = name;
-                entry.speed = spline->mPointSpeedValue;
-                entry.smoothIn = spline->mPointSmoothInValue;
-                entry.smoothOut = value;
-                entry.smoothCurve = spline->mPointSmoothCurveValue;
-                spline->mPointSpeedEntries.push_back(entry);
-            }
+            Spline3D::PointSpeedEntry& entry = getOrCreatePointEntry(name);
+            entry.smoothOut = value;
         }
 
         success = false;
@@ -1780,26 +1738,8 @@ bool Spline3D::HandlePropChange(Datum* datum, uint32_t index, const void* newVal
         if (node)
         {
             const std::string& name = node->GetName();
-            bool found = false;
-            for (uint32_t i = 0; i < spline->mPointSpeedEntries.size(); ++i)
-            {
-                if (spline->mPointSpeedEntries[i].name == name)
-                {
-                    spline->mPointSpeedEntries[i].smoothCurve = value;
-                    found = true;
-                    break;
-                }
-            }
-            if (!found)
-            {
-                Spline3D::PointSpeedEntry entry;
-                entry.name = name;
-                entry.speed = spline->mPointSpeedValue;
-                entry.smoothIn = spline->mPointSmoothInValue;
-                entry.smoothOut = spline->mPointSmoothOutValue;
-                entry.smoothCurve = value;
-                spline->mPointSpeedEntries.push_back(entry);
-            }
+            Spline3D::PointSpeedEntry& entry = getOrCreatePointEntry(name);
+            entry.smoothCurve = value;
         }
 
         success = false;
