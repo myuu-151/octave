@@ -68,7 +68,7 @@ void Spline3D::Create()
     Node3D::Create();
     SetName("Spline");
 
-    EnsureLinkSlots((uint32_t)glm::clamp(mGeneratedLinkCount, 1, 64));
+    EnsureLinkSlots((uint32_t)glm::clamp<int32_t>(mGeneratedLinkCount, 1, 64));
 
     // Create initial point
     Box3D* p1 = CreateChild<Box3D>("point1");
@@ -1199,7 +1199,7 @@ void Spline3D::LoadStream(Stream& stream, Platform platform, uint32_t version)
     }
     else
     {
-        EnsureLinkSlots((uint32_t)glm::clamp(mGeneratedLinkCount, 1, 64));
+        EnsureLinkSlots((uint32_t)glm::clamp<int32_t>(mGeneratedLinkCount, 1, 64));
     }
 
     // Optional extension block for per-point smooth settings.
