@@ -16,11 +16,14 @@ public:
     virtual void GatherProperties(std::vector<Property>& outProps) override;
     virtual void GatherProxyDraws(std::vector<DebugDraw>& inoutDraws) override;
 
+    void SetNavBounds(bool navBounds);
+    bool IsNavBounds() const;
     bool IsNavOverlayEnabled() const;
     bool IsNavNegatorEnabled() const;
     bool IsCullWallsEnabled() const;
     float GetWallCullThreshold() const;
 protected:
+    bool mNavBounds = true;
     bool mNavOverlay = true;
     bool mNavNegator = false;
     bool mCullWalls = false;

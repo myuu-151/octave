@@ -36,13 +36,23 @@ void NavMesh3D::GatherProperties(std::vector<Property>& outProps)
 
     SCOPED_CATEGORY("Nav");
     outProps.push_back(Property(DatumType::Vector, "Extents", this, &mExtents, 1, Box3D::HandlePropChange));
-    outProps.push_back(Property(DatumType::Bool, "Nav Bounds", this, &mNavBounds, 1, Box3D::HandlePropChange));
+    outProps.push_back(Property(DatumType::Bool, "Nav Bounds", this, &mNavBounds));
     outProps.push_back(Property(DatumType::Bool, "Nav Overlay", this, &mNavOverlay));
     outProps.push_back(Property(DatumType::Color, "Nav Overlay Wire Color", this, &mNavOverlayWireColor));
     outProps.push_back(Property(DatumType::Float, "Nav Overlay Line Thickness", this, &mNavOverlayLineThickness));
     outProps.push_back(Property(DatumType::Bool, "Nav Negator", this, &mNavNegator));
     outProps.push_back(Property(DatumType::Bool, "Cull 90� Walls", this, &mCullWalls));
     outProps.push_back(Property(DatumType::Float, "Wall Cull Threshold", this, &mWallCullThreshold));
+}
+
+void NavMesh3D::SetNavBounds(bool navBounds)
+{
+    mNavBounds = navBounds;
+}
+
+bool NavMesh3D::IsNavBounds() const
+{
+    return mNavBounds;
 }
 
 bool NavMesh3D::IsNavOverlayEnabled() const
