@@ -172,35 +172,7 @@ namespace
 
             // No positive NavMesh3D bounds available yet.
             return false;
-        };
-
-        auto pointInsideAnyOverlayBounds = [&](const glm::vec3& p) -> bool
-        {
-            if (activeBounds.empty())
-            {
-                return false;
-            }
-
-            for (const NavBoundsEntry& e : activeBounds)
-            {
-                if (!e.overlay)
-                {
-                    continue;
-                }
-
-                glm::vec4 lp4 = e.invTransform * glm::vec4(p, 1.0f);
-                glm::vec3 lp(lp4.x, lp4.y, lp4.z);
-                if (fabsf(lp.x) <= e.halfExtents.x &&
-                    fabsf(lp.y) <= e.halfExtents.y &&
-                    fabsf(lp.z) <= e.halfExtents.z)
-                {
-                    return true;
-                }
-            }
-
-            return false;
-        };
-
+        };`r`n
         auto pointInsideCullWallsBounds = [&](const glm::vec3& p, float& outThreshold) -> bool
         {
             if (activeBounds.empty())
@@ -238,9 +210,6 @@ namespace
             }
             return found;
         };
-
-        int32_t overlayEdgeCount = 0;
-        const int32_t kMaxOverlayEdges = 6000;
 
         for (StaticMesh3D* meshNode : navMeshes)
         {
@@ -320,17 +289,7 @@ namespace
 
                 outTris.push_back(baseVert + 0);
                 outTris.push_back(baseVert + 1);
-                outTris.push_back(baseVert + 2);
-
-                if (false && pointInsideAnyOverlayBounds(centroid) && overlayEdgeCount < kMaxOverlayEdges)
-                {
-                    const glm::vec4 overlayColor(0.1f, 1.0f, 0.25f, 1.0f);
-                    world->AddLine(Line(a, b, overlayColor, 0.15f));
-                    world->AddLine(Line(b, c, overlayColor, 0.15f));
-                    world->AddLine(Line(c, a, overlayColor, 0.15f));
-                    overlayEdgeCount += 3;
-                }
-            }
+                outTris.push_back(baseVert + 2);`r`n            }
         }
 
         return !outVerts.empty() && !outTris.empty();
@@ -1796,6 +1755,7 @@ Node* World::SpawnDefaultRoot()
 
     return mRootNode.Get();
 }
+
 
 
 
