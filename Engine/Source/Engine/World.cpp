@@ -58,7 +58,8 @@ namespace
 
     static bool BuildRecastNavData(World* world, RecastNavData& outData);
 
-    static std::unordered_map<World*, std::unique_ptr<RecastNavData>> sWorldNavCache;\n    static void InvalidateWorldNavCache(World* world)
+    static std::unordered_map<World*, std::unique_ptr<RecastNavData>> sWorldNavCache;
+    static void InvalidateWorldNavCache(World* world)
     {
         sWorldNavCache.erase(world);
     }

@@ -41,7 +41,7 @@ void NavMesh3D::GatherProperties(std::vector<Property>& outProps)
     outProps.push_back(Property(DatumType::Color, "Nav Overlay Wire Color", this, &mNavOverlayWireColor));
     outProps.push_back(Property(DatumType::Float, "Nav Overlay Line Thickness", this, &mNavOverlayLineThickness));
     outProps.push_back(Property(DatumType::Bool, "Nav Negator", this, &mNavNegator));
-    outProps.push_back(Property(DatumType::Bool, "Cull 90� Walls", this, &mCullWalls));
+    outProps.push_back(Property(DatumType::Bool, "Cull 90° Walls", this, &mCullWalls));
     outProps.push_back(Property(DatumType::Float, "Wall Cull Threshold", this, &mWallCullThreshold));
 }
 
