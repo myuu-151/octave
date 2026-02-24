@@ -20,6 +20,9 @@ public:
     glm::vec3 GetExtents() const;
     void SetExtents(glm::vec3 extents);
 
+    void SetNavBounds(bool navBounds);
+    bool IsNavBounds() const;
+
     virtual Bounds GetLocalBounds() const override;
 
     static bool HandlePropChange(Datum* datum, uint32_t index, const void* newValue);
@@ -30,4 +33,5 @@ protected:
 
     static const float sDefaultExtent;
     glm::vec3 mExtents;
+    bool mNavBounds = false;
 };
