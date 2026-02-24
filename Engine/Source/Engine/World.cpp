@@ -13,6 +13,8 @@
 #include "Assets/Scene.h"
 #include "Assets/StaticMesh.h"
 #include "Nodes/3D/StaticMesh3d.h"
+#include "Nodes/3D/Box3d.h"
+#include "Nodes/3D/NavMesh3d.h"
 #include "Nodes/3D/PointLight3d.h"
 #include "Nodes/3D/Particle3d.h"
 #include "Nodes/3D/Audio3d.h"
@@ -528,6 +530,164 @@ namespace
         std::vector<StaticMesh3D*> navMeshes;
         world->FindNodes<StaticMesh3D>(navMeshes);
 
+        std::vector<Box3D*> navBounds;
+        world->FindNodes<Box3D>(navBounds);
+
+        struct NavBoundsEntry
+        {
+            glm::mat4 invTransform;
+            glm::vec3 halfExtents;
+            bool overlay = false;
+            bool negator = false;
+            bool cullWalls = false;
+            float wallCullThreshold = 0.2f;
+        };
+        std::vector<NavBoundsEntry> activeBounds;
+
+        for (Box3D* box : navBounds)
+        {
+            if (box == nullptr || !box->IsNavBounds())
+            {
+                continue;
+            }
+
+            NavBoundsEntry e;
+            e.invTransform = glm::inverse(box->GetTransform());
+            e.halfExtents = box->GetExtents() * 0.5f;
+            NavMesh3D* navBox = box->As<NavMesh3D>();
+            // If this is a legacy Box3D nav bounds volume, allow overlay by default.
+            // NavMesh3D uses its explicit Nav Overlay toggle.
+            e.overlay = (navBox != nullptr) ? navBox->IsNavOverlayEnabled() : true;
+            e.negator = (navBox != nullptr) ? navBox->IsNavNegatorEnabled() : false;
+            e.cullWalls = (navBox != nullptr) ? navBox->IsCullWallsEnabled() : false;
+            e.wallCullThreshold = (navBox != nullptr) ? navBox->GetWallCullThreshold() : 0.2f;
+            activeBounds.push_back(e);
+        }
+
+        auto pointInsideAnyBounds = [&](const glm::vec3& p) -> bool
+        {
+            if (activeBounds.empty())
+            {
+                return false;
+            }
+
+            bool hasPositiveBounds = false;
+            bool insidePositiveBounds = false;
+            bool insideNegator = false;
+
+            for (const NavBoundsEntry& e : activeBounds)
+            {
+                glm::vec4 lp4 = e.invTransform * glm::vec4(p, 1.0f);
+                glm::vec3 lp(lp4.x, lp4.y, lp4.z);
+                const bool inside = (fabsf(lp.x) <= e.halfExtents.x &&
+                                     fabsf(lp.y) <= e.halfExtents.y &&
+                                     fabsf(lp.z) <= e.halfExtents.z);
+                if (!inside)
+                {
+                    continue;
+                }
+
+                if (e.negator)
+                {
+                    insideNegator = true;
+                }
+                else
+                {
+                    insidePositiveBounds = true;
+                }
+            }
+
+            for (const NavBoundsEntry& e : activeBounds)
+            {
+                if (!e.negator)
+                {
+                    hasPositiveBounds = true;
+                    break;
+                }
+            }
+
+            if (insideNegator)
+            {
+                return false;
+            }
+
+            if (hasPositiveBounds)
+            {
+                return insidePositiveBounds;
+            }
+
+            // No positive NavMesh3D bounds available yet.
+            return false;
+        };
+
+        auto pointInsideAnyOverlayBounds = [&](const glm::vec3& p) -> bool
+        {
+            if (activeBounds.empty())
+            {
+                return false;
+            }
+
+            for (const NavBoundsEntry& e : activeBounds)
+            {
+                if (!e.overlay)
+                {
+                    continue;
+                }
+
+                glm::vec4 lp4 = e.invTransform * glm::vec4(p, 1.0f);
+                glm::vec3 lp(lp4.x, lp4.y, lp4.z);
+                if (fabsf(lp.x) <= e.halfExtents.x &&
+                    fabsf(lp.y) <= e.halfExtents.y &&
+                    fabsf(lp.z) <= e.halfExtents.z)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        };
+
+        auto pointInsideCullWallsBounds = [&](const glm::vec3& p, float& outThreshold) -> bool
+        {
+            if (activeBounds.empty())
+            {
+                return false;
+            }
+
+            bool found = false;
+            float bestThreshold = 0.2f;
+
+            for (const NavBoundsEntry& e : activeBounds)
+            {
+                if (!e.cullWalls)
+                {
+                    continue;
+                }
+
+                glm::vec4 lp4 = e.invTransform * glm::vec4(p, 1.0f);
+                glm::vec3 lp(lp4.x, lp4.y, lp4.z);
+                if (fabsf(lp.x) <= e.halfExtents.x &&
+                    fabsf(lp.y) <= e.halfExtents.y &&
+                    fabsf(lp.z) <= e.halfExtents.z)
+                {
+                    if (!found || e.wallCullThreshold > bestThreshold)
+                    {
+                        bestThreshold = e.wallCullThreshold;
+                    }
+                    found = true;
+                }
+            }
+
+            if (found)
+            {
+                outThreshold = bestThreshold;
+            }
+            return found;
+        };
+
+        int32_t overlayEdgeCount = 0;
+        const int32_t kMaxOverlayEdges = 6000;
+
         for (StaticMesh3D* meshNode : navMeshes)
         {
             if (meshNode == nullptr || !meshNode->IsNavmeshReady())
@@ -551,26 +711,71 @@ namespace
                 continue;
             }
 
-            const int baseVert = (int)(outVerts.size() / 3);
             const glm::mat4 transform = meshNode->GetTransform();
 
+            // Build world-space vertices for this mesh and only emit triangles that
+            // fall inside at least one Nav Bounds box (if any are enabled).
+            std::vector<glm::vec3> worldVerts;
+            worldVerts.resize(numVertices);
             for (uint32_t i = 0; i < numVertices; ++i)
             {
-                glm::vec3 p = vertices[i].mPosition;
-                glm::vec4 wp = transform * glm::vec4(p, 1.0f);
-                outVerts.push_back(wp.x);
-                outVerts.push_back(wp.y);
-                outVerts.push_back(wp.z);
+                glm::vec4 wp = transform * glm::vec4(vertices[i].mPosition, 1.0f);
+                worldVerts[i] = glm::vec3(wp.x, wp.y, wp.z);
             }
 
             for (uint32_t i = 0; i + 2 < numIndices; i += 3)
             {
-                const int ia = baseVert + (int)indices[i + 0];
-                const int ib = baseVert + (int)indices[i + 1];
-                const int ic = baseVert + (int)indices[i + 2];
-                outTris.push_back(ia);
-                outTris.push_back(ib);
-                outTris.push_back(ic);
+                const uint32_t ia = (uint32_t)indices[i + 0];
+                const uint32_t ib = (uint32_t)indices[i + 1];
+                const uint32_t ic = (uint32_t)indices[i + 2];
+                if (ia >= numVertices || ib >= numVertices || ic >= numVertices)
+                {
+                    continue;
+                }
+
+                const glm::vec3& a = worldVerts[ia];
+                const glm::vec3& b = worldVerts[ib];
+                const glm::vec3& c = worldVerts[ic];
+                const glm::vec3 centroid = (a + b + c) / 3.0f;
+
+                if (!pointInsideAnyBounds(centroid))
+                {
+                    continue;
+                }
+
+                float wallCullThreshold = 0.2f;
+                if (pointInsideCullWallsBounds(centroid, wallCullThreshold))
+                {
+                    glm::vec3 n = glm::cross(b - a, c - a);
+                    float nlen2 = glm::dot(n, n);
+                    if (nlen2 > 1e-8f)
+                    {
+                        n = glm::normalize(n);
+                        // Cull near-vertical faces ("90 degree walls")
+                        if (fabsf(n.y) < wallCullThreshold)
+                        {
+                            continue;
+                        }
+                    }
+                }
+
+                const int baseVert = (int)(outVerts.size() / 3);
+                outVerts.push_back(a.x); outVerts.push_back(a.y); outVerts.push_back(a.z);
+                outVerts.push_back(b.x); outVerts.push_back(b.y); outVerts.push_back(b.z);
+                outVerts.push_back(c.x); outVerts.push_back(c.y); outVerts.push_back(c.z);
+
+                outTris.push_back(baseVert + 0);
+                outTris.push_back(baseVert + 1);
+                outTris.push_back(baseVert + 2);
+
+                if (false && pointInsideAnyOverlayBounds(centroid) && overlayEdgeCount < kMaxOverlayEdges)
+                {
+                    const glm::vec4 overlayColor(0.1f, 1.0f, 0.25f, 1.0f);
+                    world->AddLine(Line(a, b, overlayColor, 0.15f));
+                    world->AddLine(Line(b, c, overlayColor, 0.15f));
+                    world->AddLine(Line(c, a, overlayColor, 0.15f));
+                    overlayEdgeCount += 3;
+                }
             }
         }
 
@@ -1096,20 +1301,6 @@ bool World::FindClosestNavPoint(glm::vec3 inPoint, glm::vec3& outPoint)
     return true;
 }
 
-bool World::BakeNavMesh()
-{
-    InvalidateWorldNavCache(this);
-    RecastNavData* nav = GetOrBuildWorldNav(this);
-    return (nav != nullptr && nav->mQuery != nullptr);
-}
-
-void World::ClearNavMeshCache()
-{
-    InvalidateWorldNavCache(this);
-    const std::string path = GetNavBinPath(this);
-    std::remove(path.c_str());
-    SetNavMeshStatus("Navmesh cache cleared", path);
-}
 
 const std::string& World::GetNavMeshStatus() const
 {
@@ -2066,6 +2257,12 @@ Node* World::SpawnDefaultRoot()
 
     return mRootNode.Get();
 }
+
+
+
+
+
+
 
 
 
