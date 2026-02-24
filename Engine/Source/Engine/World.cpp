@@ -28,6 +28,7 @@
 #include <cstring>
 #include <cctype>
 #include <memory>
+#include <mutex>
 
 #include <btBulletDynamicsCommon.h>
 #include <BulletCollision/CollisionDispatch/btInternalEdgeUtility.h>
@@ -58,17 +59,37 @@ namespace
 
     static bool BuildRecastNavData(World* world, RecastNavData& outData);
 
-    static std::unordered_map<World*, std::unique_ptr<RecastNavData>> sWorldNavCache;\n    static void InvalidateWorldNavCache(World* world)
+    static std::unordered_map<World*, std::unique_ptr<RecastNavData>> sWorldNavCache;
+    static std::mutex sWorldNavCacheMutex;
+
+    // Nav query extents for nearest-poly lookups.
+    static constexpr float kNavQueryExtX = 2.0f;
+    static constexpr float kNavQueryExtY = 4.0f;
+    static constexpr float kNavQueryExtZ = 2.0f;
+
+    // Recast build defaults (named constants for visibility/tuning).
+    static constexpr float kNavCellSize = 0.3f;
+    static constexpr float kNavCellHeight = 0.2f;
+    static constexpr float kNavWalkableSlopeDeg = 55.0f;
+    static constexpr float kNavWalkableHeight = 2.0f;
+    static constexpr float kNavWalkableClimb = 0.9f;
+    static constexpr float kNavWalkableRadius = 0.4f;
+
+    static void InvalidateWorldNavCache(World* world)
     {
+        std::lock_guard<std::mutex> lock(sWorldNavCacheMutex);
         sWorldNavCache.erase(world);
     }
 
     static RecastNavData* GetOrBuildWorldNav(World* world)
     {
-        auto it = sWorldNavCache.find(world);
-        if (it != sWorldNavCache.end() && it->second && it->second->mQuery)
         {
-            return it->second.get();
+            std::lock_guard<std::mutex> lock(sWorldNavCacheMutex);
+            auto it = sWorldNavCache.find(world);
+            if (it != sWorldNavCache.end() && it->second && it->second->mQuery)
+            {
+                return it->second.get();
+            }
         }
 
         std::unique_ptr<RecastNavData> nav = std::make_unique<RecastNavData>();
@@ -78,7 +99,10 @@ namespace
         }
 
         RecastNavData* ret = nav.get();
-        sWorldNavCache[world] = std::move(nav);
+        {
+            std::lock_guard<std::mutex> lock(sWorldNavCacheMutex);
+            sWorldNavCache[world] = std::move(nav);
+        }
         return ret;
     }
 
@@ -308,12 +332,12 @@ namespace
         rcCalcBounds(verts.data(), (int)verts.size() / 3, bmin, bmax);
 
         rcConfig cfg{};
-        cfg.cs = 0.3f;
-        cfg.ch = 0.2f;
-        cfg.walkableSlopeAngle = 55.0f;
-        cfg.walkableHeight = (int)ceilf(2.0f / cfg.ch);
-        cfg.walkableClimb = (int)floorf(0.9f / cfg.ch);
-        cfg.walkableRadius = (int)ceilf(0.4f / cfg.cs);
+        cfg.cs = kNavCellSize;
+        cfg.ch = kNavCellHeight;
+        cfg.walkableSlopeAngle = kNavWalkableSlopeDeg;
+        cfg.walkableHeight = (int)ceilf(kNavWalkableHeight / cfg.ch);
+        cfg.walkableClimb = (int)floorf(kNavWalkableClimb / cfg.ch);
+        cfg.walkableRadius = (int)ceilf(kNavWalkableRadius / cfg.cs);
         cfg.maxEdgeLen = (int)(12.0f / cfg.cs);
         cfg.maxSimplificationError = 1.3f;
         cfg.minRegionArea = (int)rcSqr(8);
@@ -389,9 +413,9 @@ namespace
             params.detailVertsCount = dmesh->nverts;
             params.detailTris = dmesh->tris;
             params.detailTriCount = dmesh->ntris;
-            params.walkableHeight = 2.0f;
-            params.walkableRadius = 0.4f;
-            params.walkableClimb = 0.9f;
+            params.walkableHeight = kNavWalkableHeight;
+            params.walkableRadius = kNavWalkableRadius;
+            params.walkableClimb = kNavWalkableClimb;
             rcVcopy(params.bmin, pmesh->bmin);
             rcVcopy(params.bmax, pmesh->bmax);
             params.cs = cfg.cs;
@@ -713,7 +737,7 @@ bool World::FindNavPath(glm::vec3 start, glm::vec3 end, std::vector<glm::vec3>& 
         return false;
     }
 
-    const float ext[3] = { 2.0f, 4.0f, 2.0f };
+    const float ext[3] = { kNavQueryExtX, kNavQueryExtY, kNavQueryExtZ };
     const float startPt[3] = { start.x, start.y, start.z };
     const float endPt[3] = { end.x, end.y, end.z };
 
@@ -800,7 +824,7 @@ bool World::FindClosestNavPoint(glm::vec3 inPoint, glm::vec3& outPoint)
     filter.setIncludeFlags(0xffff);
     filter.setExcludeFlags(0);
 
-    const float ext[3] = { 2.0f, 4.0f, 2.0f };
+    const float ext[3] = { kNavQueryExtX, kNavQueryExtY, kNavQueryExtZ };
     const float inPt[3] = { inPoint.x, inPoint.y, inPoint.z };
     dtPolyRef ref = 0;
     float outPt[3] = {};
@@ -815,6 +839,11 @@ bool World::FindClosestNavPoint(glm::vec3 inPoint, glm::vec3& outPoint)
 }
 
 
+
+void World::InvalidateNavMesh()
+{
+    InvalidateWorldNavCache(this);
+}
 
 void World::Clear()
 {
@@ -1107,6 +1136,11 @@ void World::SweepTest(
 
 void World::RegisterNode(Node* node, bool subRoot)
 {
+    if (node && (node->As<StaticMesh3D>() != nullptr || node->As<NavMesh3D>() != nullptr))
+    {
+        InvalidateWorldNavCache(this);
+    }
+
     TypeId nodeType = node->GetType();
 
     // TODO: Now that components have become nodes, these static type checks don't hold up
@@ -1142,6 +1176,11 @@ void World::RegisterNode(Node* node, bool subRoot)
 
 void World::UnregisterNode(Node* node, bool subRoot)
 {
+    if (node && (node->As<StaticMesh3D>() != nullptr || node->As<NavMesh3D>() != nullptr))
+    {
+        InvalidateWorldNavCache(this);
+    }
+
     TypeId nodeType = node->GetType();
 
     if (nodeType == Audio3D::GetStaticType())
