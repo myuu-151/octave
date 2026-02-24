@@ -9,7 +9,6 @@
 #include "NetworkManager.h"
 #include "InputDevices.h"
 #include "Engine.h"
-#include "EmbeddedFile.h"
 #include "Assets/Scene.h"
 #include "Assets/StaticMesh.h"
 #include "Nodes/3D/StaticMesh3d.h"
@@ -30,8 +29,6 @@
 #include <cstring>
 #include <cctype>
 #include <memory>
-#include <fstream>
-#include <cstdio>
 
 #include <btBulletDynamicsCommon.h>
 #include <BulletCollision/CollisionDispatch/btInternalEdgeUtility.h>
@@ -265,236 +262,7 @@ namespace
 
     static bool BuildRecastNavData(World* world, RecastNavData& outData);
 
-    static std::unordered_map<World*, std::unique_ptr<RecastNavData>> sWorldNavCache;
-
-    static std::string SanitizeName(const std::string& in)
-    {
-        std::string out = in;
-        for (char& c : out)
-        {
-            if (!(isalnum((unsigned char)c) || c == '_' || c == '-' || c == '.'))
-            {
-                c = '_';
-            }
-            c = (char)tolower((unsigned char)c);
-        }
-        return out;
-    }
-
-    static std::string GetNavBinPath(World* world)
-    {
-        std::string sceneName = "default";
-        Node* root = world ? world->GetRootNode() : nullptr;
-        if (root && root->GetScene())
-        {
-            sceneName = root->GetScene()->GetName();
-        }
-
-        sceneName = SanitizeName(sceneName);
-
-        std::string baseDir;
-        EngineState* state = GetEngineState();
-        if (state && !state->mProjectDirectory.empty())
-        {
-            baseDir = state->mProjectDirectory + "Assets/";
-#if !(PLATFORM_GAMECUBE || PLATFORM_DOLPHIN)
-            if (!DoesDirExist(baseDir.c_str()))
-            {
-                CreateDir(baseDir.c_str());
-            }
-#endif
-        }
-        else
-        {
-            baseDir = "Assets/";
-#if !(PLATFORM_GAMECUBE || PLATFORM_DOLPHIN)
-            if (!DoesDirExist(baseDir.c_str())) CreateDir(baseDir.c_str());
-#endif
-        }
-
-        return baseDir + sceneName + ".navbin";
-    }
-
-    static bool SaveNavBin(const RecastNavData& nav, const std::string& path)
-    {
-        if (!nav.mNavMesh)
-        {
-            return false;
-        }
-
-        const dtMeshTile* tile = nullptr;
-        const dtNavMesh* constNav = nav.mNavMesh;
-        for (int i = 0; i < constNav->getMaxTiles(); ++i)
-        {
-            const dtMeshTile* t = constNav->getTile(i);
-            if (t && t->data && t->dataSize > 0)
-            {
-                tile = t;
-                break;
-            }
-        }
-
-        if (!tile)
-        {
-            return false;
-        }
-
-        std::ofstream out(path, std::ios::binary);
-        if (!out.is_open())
-        {
-            return false;
-        }
-
-        const uint32_t magic = 0x4E415642; // NAVB
-        const uint32_t version = 1;
-        const uint32_t size = (uint32_t)tile->dataSize;
-
-        out.write((const char*)&magic, sizeof(magic));
-        out.write((const char*)&version, sizeof(version));
-        out.write((const char*)&size, sizeof(size));
-        out.write((const char*)tile->data, size);
-        return out.good();
-    }
-
-    static bool InitNavFromBytes(const unsigned char* bytes, uint32_t totalSize, RecastNavData& outData)
-    {
-        if (totalSize < 12)
-        {
-            return false;
-        }
-
-        uint32_t magic = 0;
-        uint32_t version = 0;
-        uint32_t size = 0;
-        memcpy(&magic, bytes + 0, sizeof(magic));
-        memcpy(&version, bytes + 4, sizeof(version));
-        memcpy(&size, bytes + 8, sizeof(size));
-
-        if (magic != 0x4E415642 || version != 1 || size == 0 || (12u + size) > totalSize)
-        {
-            return false;
-        }
-
-        unsigned char* navData = (unsigned char*)dtAlloc(size, DT_ALLOC_PERM);
-        if (!navData)
-        {
-            return false;
-        }
-
-        memcpy(navData, bytes + 12, size);
-
-        outData.mNavMesh = dtAllocNavMesh();
-        if (!outData.mNavMesh)
-        {
-            dtFree(navData);
-            return false;
-        }
-
-        if (dtStatusFailed(outData.mNavMesh->init(navData, (int)size, DT_TILE_FREE_DATA)))
-        {
-            return false;
-        }
-
-        outData.mQuery = dtAllocNavMeshQuery();
-        if (!outData.mQuery)
-        {
-            return false;
-        }
-
-        return !dtStatusFailed(outData.mQuery->init(outData.mNavMesh, 2048));
-    }
-
-    static bool InitNavFromAnyBytes(const unsigned char* bytes, uint32_t totalSize, RecastNavData& outData)
-    {
-        return InitNavFromBytes(bytes, totalSize, outData);
-    }
-
-    static bool LoadNavBin(const std::string& path, RecastNavData& outData)
-    {
-        if (!SYS_DoesFileExist(path.c_str(), false))
-        {
-            return false;
-        }
-
-        Stream stream;
-        if (!stream.ReadFile(path.c_str(), false))
-        {
-            return false;
-        }
-
-        // Legacy raw NAVB blob.
-        std::vector<unsigned char> bytes((size_t)stream.GetSize());
-        if (stream.GetSize() > 0)
-        {
-            memcpy(bytes.data(), stream.GetData(), stream.GetSize());
-        }
-
-        return InitNavFromBytes(bytes.data(), (uint32_t)bytes.size(), outData);
-    }
-
-    static bool LoadEmbeddedNavBin(const std::string& path, RecastNavData& outData)
-    {
-        const EngineConfig* cfg = GetEngineConfig();
-        if (!cfg || !cfg->mEmbeddedAssets || cfg->mEmbeddedAssetCount == 0)
-        {
-            return false;
-        }
-
-        auto basenameOf = [](const std::string& p) -> std::string
-        {
-            size_t s1 = p.find_last_of('/');
-            size_t s2 = p.find_last_of('\\');
-            size_t s = std::string::npos;
-            if (s1 != std::string::npos && s2 != std::string::npos) s = std::max(s1, s2);
-            else s = (s1 != std::string::npos) ? s1 : s2;
-            return (s == std::string::npos) ? p : p.substr(s + 1);
-        };
-
-        auto endsWith = [](const std::string& s, const std::string& suf) -> bool
-        {
-            return s.size() >= suf.size() && s.compare(s.size() - suf.size(), suf.size(), suf) == 0;
-        };
-
-        const std::string wantBase = basenameOf(path);
-
-        // Pass 1: exact or basename match.
-        for (uint32_t i = 0; i < cfg->mEmbeddedAssetCount; ++i)
-        {
-            const EmbeddedFile& ef = cfg->mEmbeddedAssets[i];
-            if (!ef.mName || !ef.mData || ef.mSize == 0)
-            {
-                continue;
-            }
-
-            std::string n = ef.mName;
-            if (n == path || basenameOf(n) == wantBase)
-            {
-                LogDebug("Loading embedded navmesh: %s", n.c_str());
-                return InitNavFromBytes((const unsigned char*)ef.mData, ef.mSize, outData);
-            }
-        }
-
-        // Pass 2: fallback to any embedded nav blob (single-scene packaged case).
-        for (uint32_t i = 0; i < cfg->mEmbeddedAssetCount; ++i)
-        {
-            const EmbeddedFile& ef = cfg->mEmbeddedAssets[i];
-            if (!ef.mName || !ef.mData || ef.mSize == 0)
-            {
-                continue;
-            }
-
-            std::string n = ef.mName;
-            if (endsWith(n, ".navbin"))
-            {
-                LogWarning("Embedded navmesh exact match failed; using fallback: %s", n.c_str());
-                return InitNavFromBytes((const unsigned char*)ef.mData, ef.mSize, outData);
-            }
-        }
-
-        return false;
-    }
-
-    static void InvalidateWorldNavCache(World* world)
+    static std::unordered_map<World*, std::unique_ptr<RecastNavData>> sWorldNavCache;\n    static void InvalidateWorldNavCache(World* world)
     {
         sWorldNavCache.erase(world);
     }
@@ -504,21 +272,14 @@ namespace
         auto it = sWorldNavCache.find(world);
         if (it != sWorldNavCache.end() && it->second && it->second->mQuery)
         {
-            if (world->GetNavMeshStatus() == "Uninitialized")
-            {
-                world->SetNavMeshStatus("Using cached navmesh", "runtime");
-            }
             return it->second.get();
         }
 
         std::unique_ptr<RecastNavData> nav = std::make_unique<RecastNavData>();
         if (!BuildRecastNavData(world, *nav))
         {
-            world->SetNavMeshStatus("Navmesh build failed", "runtime");
             return nullptr;
         }
-
-        world->SetNavMeshStatus("Built runtime navmesh", "runtime");
 
         RecastNavData* ret = nav.get();
         sWorldNavCache[world] = std::move(nav);
@@ -1302,21 +1063,6 @@ bool World::FindClosestNavPoint(glm::vec3 inPoint, glm::vec3& outPoint)
 }
 
 
-const std::string& World::GetNavMeshStatus() const
-{
-    return mNavMeshStatus;
-}
-
-const std::string& World::GetNavMeshPath() const
-{
-    return mNavMeshPath;
-}
-
-void World::SetNavMeshStatus(const std::string& status, const std::string& path)
-{
-    mNavMeshStatus = status;
-    mNavMeshPath = path;
-}
 
 void World::Clear()
 {
@@ -2257,6 +2003,9 @@ Node* World::SpawnDefaultRoot()
 
     return mRootNode.Get();
 }
+
+
+
 
 
 
