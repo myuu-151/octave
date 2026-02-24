@@ -14,6 +14,7 @@
 #include <string>
 #include <functional>
 #include <algorithm>
+#include <cctype>
 
 #include "Log.h"
 #include "EditorConstants.h"
@@ -549,6 +550,19 @@ void ActionManager::BuildData(Platform platform, bool embedded)
             std::string makeCmd = std::string("make -C ") + (buildProjDir) + " -f Makefile_TEMP -j 12";
             SYS_Exec(makeCmd.c_str());
 
+            // Hard stop if expected GC executable was not produced.
+            if (platform == Platform::GameCube)
+            {
+                std::string gcOut = buildProjDir + "Build/GCN/" + (standalone ? "Octave" : projectName) + ".dol";
+                std::string gcOutAlt = buildProjDir + "Build/GameCube/" + (standalone ? "Octave" : projectName) + ".dol";
+                if (!SYS_DoesFileExist(gcOut.c_str(), false) && !SYS_DoesFileExist(gcOutAlt.c_str(), false))
+                {
+                    LogError("GameCube make step failed to produce .dol. Check toolchain/gamecube_rules include.");
+                    SYS_RemoveFile(tmpMakefile.c_str());
+                    return;
+                }
+            }
+
             // Delete the temp makefile
             SYS_RemoveFile(tmpMakefile.c_str());
             //SYS_Exec(std::string("rm " + tmpMakefile).c_str());
@@ -615,7 +629,29 @@ void ActionManager::BuildData(Platform platform, bool embedded)
         exeSrc = prebuiltExeName;
     }
 
+    // GC fallback probes in case toolchain/makefile outputs a different folder layout.
+    if (platform == Platform::GameCube && !SYS_DoesFileExist(exeSrc.c_str(), false))
+    {
+        std::vector<std::string> gcCandidates = {
+            buildProjDir + "Build/GameCube/" + exeName,
+            buildProjDir + "Build/" + exeName,
+            buildProjDir + exeName,
+            std::string("Standalone/Build/GCN/") + exeName,
+            std::string("Standalone/Build/GameCube/") + exeName
+        };
 
+        for (const std::string& c : gcCandidates)
+        {
+            if (SYS_DoesFileExist(c.c_str(), false))
+            {
+                LogDebug("GC executable fallback hit: %s", c.c_str());
+                exeSrc = c;
+                break;
+            }
+        }
+    }
+
+    LogDebug("Packaging executable source: %s", exeSrc.c_str());
     SYS_CopyDirectory(exeSrc.c_str(), packagedDir.c_str());
 
     //std::string exeCopyCmd = std::string("cp ") + exeSrc + " " + packagedDir;
@@ -1890,6 +1926,7 @@ Asset* ActionManager::ImportAsset(const std::string& path)
         importTypes.push_back(Font::GetStaticType());
     }
 
+
     if (importTypes.size() == 0)
     {
         LogError("Failed to import Asset. Unrecognized source asset extension.");
@@ -2546,6 +2583,27 @@ void ActionManager::GenerateEmbeddedAssetFiles(std::vector<std::pair<AssetStub*,
     const char* headerPath,
     const char* sourcePath)
 {
+    auto makeSafeIdent = [](const std::string& in) -> std::string
+    {
+        std::string out;
+        out.reserve(in.size() + 8);
+
+        for (char c : in)
+        {
+            if (std::isalnum((unsigned char)c) || c == '_')
+            {
+                out.push_back(c);
+            }
+            else
+            {
+                out.push_back('_');
+            }
+        }
+
+        if (out.empty()) out = "data";
+        if (std::isdigit((unsigned char)out[0])) out = std::string("_") + out;
+        return out;
+    };
     FILE* headerFile = fopen(headerPath, "w");
     FILE* sourceFile = fopen(sourcePath, "w");
 
@@ -2565,28 +2623,43 @@ void ActionManager::GenerateEmbeddedAssetFiles(std::vector<std::pair<AssetStub*,
         fprintf(sourceFile, "#include \"EmbeddedFile.h\"\n\n");
 
         std::string initializer;
+        std::unordered_map<std::string, int32_t> usedSymbols;
 
-        for (int32_t i = 0; i < int32_t(assets.size()); ++i)
+        auto appendEmbeddedRaw = [&](const std::string& name, const std::string& srcPath, bool engineAsset)
         {
-            AssetStub* stub = assets[i].first;
-            const std::string& packPath = assets[i].second;
-            std::string dataVarName = stub->mName + "_Data";
+            std::string symbolBase = makeSafeIdent(name);
+            int32_t& symCount = usedSymbols[symbolBase];
+            std::string uniqueSym = symbolBase;
+            if (symCount > 0)
+            {
+                uniqueSym += "_" + std::to_string(symCount);
+            }
+            symCount++;
+
+            std::string dataVarName = uniqueSym + "_Data";
             uint32_t dataSize = 0;
 
             std::string sourceString;
             ConvertFileToByteString(
-                packPath,
+                srcPath,
                 dataVarName,
                 sourceString,
                 dataSize);
 
             fprintf(sourceFile, "%s", sourceString.c_str());
 
-            initializer += "{" + ("\"" + stub->mName + "\",") +
+            initializer += "{" + ("\"" + name + "\",") +
                                  (dataVarName + ",") +
                                  (std::to_string(dataSize) + ",") +
-                                 (stub->mEngineAsset ? "true" : "false") +
+                                 (engineAsset ? "true" : "false") +
                                  "}, \n";
+        };
+
+        for (int32_t i = 0; i < int32_t(assets.size()); ++i)
+        {
+            AssetStub* stub = assets[i].first;
+            const std::string& packPath = assets[i].second;
+            appendEmbeddedRaw(stub->mName, packPath, stub->mEngineAsset);
         }
 
         fprintf(sourceFile, "\n\nuint32_t gNumEmbeddedAssets = %d;\n", uint32_t(assets.size()));
@@ -2630,6 +2703,27 @@ void ActionManager::GenerateEmbeddedScriptFiles(
     const char* headerPath,
     const char* sourcePath)
 {
+    auto makeSafeIdent = [](const std::string& in) -> std::string
+    {
+        std::string out;
+        out.reserve(in.size() + 8);
+
+        for (char c : in)
+        {
+            if (std::isalnum((unsigned char)c) || c == '_')
+            {
+                out.push_back(c);
+            }
+            else
+            {
+                out.push_back('_');
+            }
+        }
+
+        if (out.empty()) out = "script";
+        if (std::isdigit((unsigned char)out[0])) out = std::string("_") + out;
+        return out;
+    };
     FILE* headerFile = fopen(headerPath, "w");
     FILE* sourceFile = fopen(sourcePath, "w");
 
@@ -2647,11 +2741,21 @@ void ActionManager::GenerateEmbeddedScriptFiles(
         fprintf(sourceFile, "#include \"EmbeddedFile.h\"\n\n");
 
         std::string initializer;
+        std::unordered_map<std::string, int32_t> usedSymbols;
 
         for (int32_t i = 0; i < int32_t(files.size()); ++i)
         {
             std::string luaFile = files[i];
             std::string luaClass = ScriptUtils::GetClassNameFromFileName(luaFile);
+
+            std::string symbolBase = makeSafeIdent(luaClass);
+            int32_t& symCount = usedSymbols[symbolBase];
+            std::string uniqueSym = symbolBase;
+            if (symCount > 0)
+            {
+                uniqueSym += "_" + std::to_string(symCount);
+            }
+            symCount++;
 
             Stream stream;
 
@@ -2663,7 +2767,7 @@ void ActionManager::GenerateEmbeddedScriptFiles(
             std::string sourceString;
             sourceString.reserve(2048);
 
-            std::string fileDataVar = luaClass + "_Data";
+            std::string fileDataVar = uniqueSym + "_Data";
             sourceString += "const char ";
             sourceString += fileDataVar;
             sourceString += "[] = \n{\n";
@@ -3804,3 +3908,5 @@ void ActionManager::UpgradeProject()
 }
 
 #endif
+
+

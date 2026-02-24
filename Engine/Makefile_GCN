@@ -8,7 +8,11 @@ ifeq ($(strip $(DEVKITPPC)),)
 $(error "Please set DEVKITPPC in your environment. export DEVKITPPC=<path to>devkitPPC")
 endif
 
+ifeq ($(wildcard $(DEVKITPPC)/gamecube_rules),)
 include $(DEVKITPRO)/libogc2/gamecube_rules
+else
+include $(DEVKITPPC)/gamecube_rules
+endif
 
 #---------------------------------------------------------------------------------
 # TARGET is the name of the output
@@ -36,10 +40,12 @@ SOURCES		:=	Source \
 				Source/Network/Dolphin \
 				Source/LuaBindings \
 				../External/Lua \
-				../External/Vorbis
+				../External/Vorbis \
+				../External/recastnavigation/Recast/Source \
+				../External/recastnavigation/Detour/Source
 #DATA		:=	data
 #TEXTURES	:=	textures 
-INCLUDES	:=	Source Source/Engine ../External ../External/Bullet ../External/Vorbis 
+INCLUDES	:=	Source Source/Engine ../External ../External/Bullet ../External/Vorbis ../External/recastnavigation/Recast/Include ../External/recastnavigation/Detour/Include 
 OUTPUT_DIR	:=	$(CURDIR)/Build/GCN
 BULLET_DIR	:=	$(CURDIR)/../External/Bullet
 
@@ -81,6 +87,9 @@ export DEPSDIR	:=	$(CURDIR)/$(BUILD)
 #---------------------------------------------------------------------------------
 CFILES			:=	$(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.c)))
 CPPFILES		:=	$(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.cpp)))
+# Recast/Detour: explicitly list to avoid wildcard/path quirks on some make environments.
+CPPFILES		+=	Recast.cpp RecastAlloc.cpp RecastArea.cpp RecastAssert.cpp RecastContour.cpp RecastFilter.cpp RecastLayers.cpp RecastMesh.cpp RecastMeshDetail.cpp RecastRasterization.cpp RecastRegion.cpp
+CPPFILES		+=	DetourAlloc.cpp DetourAssert.cpp DetourCommon.cpp DetourNavMesh.cpp DetourNavMeshBuilder.cpp DetourNavMeshQuery.cpp DetourNode.cpp
 sFILES			:=	$(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.s)))
 SFILES			:=	$(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.S)))
 BINFILES		:=	$(foreach dir,$(DATA),$(notdir $(wildcard $(dir)/*.*)))

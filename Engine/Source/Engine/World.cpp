@@ -8,7 +8,10 @@
 #include "AssetManager.h"
 #include "NetworkManager.h"
 #include "InputDevices.h"
+#include "Engine.h"
+#include "EmbeddedFile.h"
 #include "Assets/Scene.h"
+#include "Assets/StaticMesh.h"
 #include "Nodes/3D/StaticMesh3d.h"
 #include "Nodes/3D/PointLight3d.h"
 #include "Nodes/3D/Particle3d.h"
@@ -20,12 +23,688 @@
 
 #include <map>
 #include <algorithm>
+#include <cfloat>
+#include <cmath>
+#include <cstring>
+#include <cctype>
+#include <memory>
+#include <fstream>
+#include <cstdio>
 
 #include <btBulletDynamicsCommon.h>
 #include <BulletCollision/CollisionDispatch/btInternalEdgeUtility.h>
 #include <Bullet/BulletCollision/CollisionShapes/btTriangleShape.h>
 
+#include "../../../External/recastnavigation/Recast/Include/Recast.h"
+#include "../../../External/recastnavigation/Detour/Include/DetourNavMesh.h"
+#include "../../../External/recastnavigation/Detour/Include/DetourNavMeshBuilder.h"
+#include "../../../External/recastnavigation/Detour/Include/DetourNavMeshQuery.h"
+
 using namespace std;
+
+namespace
+{
+    struct NavTriangle
+    {
+        glm::vec3 mA;
+        glm::vec3 mB;
+        glm::vec3 mC;
+        glm::vec3 mCenter;
+        float mArea = 0.0f;
+        std::vector<int32_t> mNeighbors;
+    };
+
+    struct NavBuildData
+    {
+        std::vector<NavTriangle> mTriangles;
+    };
+
+    static glm::vec3 ClosestPointOnTriangle(const glm::vec3& p, const glm::vec3& a, const glm::vec3& b, const glm::vec3& c)
+    {
+        const glm::vec3 ab = b - a;
+        const glm::vec3 ac = c - a;
+        const glm::vec3 ap = p - a;
+
+        const float d1 = glm::dot(ab, ap);
+        const float d2 = glm::dot(ac, ap);
+        if (d1 <= 0.0f && d2 <= 0.0f) return a;
+
+        const glm::vec3 bp = p - b;
+        const float d3 = glm::dot(ab, bp);
+        const float d4 = glm::dot(ac, bp);
+        if (d3 >= 0.0f && d4 <= d3) return b;
+
+        const float vc = d1 * d4 - d3 * d2;
+        if (vc <= 0.0f && d1 >= 0.0f && d3 <= 0.0f)
+        {
+            const float v = d1 / (d1 - d3);
+            return a + v * ab;
+        }
+
+        const glm::vec3 cp = p - c;
+        const float d5 = glm::dot(ab, cp);
+        const float d6 = glm::dot(ac, cp);
+        if (d6 >= 0.0f && d5 <= d6) return c;
+
+        const float vb = d5 * d2 - d1 * d6;
+        if (vb <= 0.0f && d2 >= 0.0f && d6 <= 0.0f)
+        {
+            const float w = d2 / (d2 - d6);
+            return a + w * ac;
+        }
+
+        const float va = d3 * d6 - d5 * d4;
+        if (va <= 0.0f && (d4 - d3) >= 0.0f && (d5 - d6) >= 0.0f)
+        {
+            const float w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
+            return b + w * (c - b);
+        }
+
+        const float denom = 1.0f / (va + vb + vc);
+        const float v = vb * denom;
+        const float w = vc * denom;
+        return a + ab * v + ac * w;
+    }
+
+    static bool BuildNavData(World* world, NavBuildData& outData)
+    {
+        std::vector<StaticMesh3D*> navMeshes;
+        world->FindNodes<StaticMesh3D>(navMeshes);
+
+        std::unordered_map<uint64_t, std::vector<int32_t>> edgeMap;
+
+        uint32_t globalVertexBase = 0;
+
+        for (StaticMesh3D* meshNode : navMeshes)
+        {
+            if (meshNode == nullptr || !meshNode->IsNavmeshReady())
+            {
+                continue;
+            }
+
+            StaticMesh* staticMesh = meshNode->GetStaticMesh();
+            if (staticMesh == nullptr)
+            {
+                continue;
+            }
+
+            const uint32_t numIndices = staticMesh->GetNumIndices();
+            const uint32_t numVertices = staticMesh->GetNumVertices();
+            if (numIndices < 3 || numVertices == 0)
+            {
+                continue;
+            }
+
+            Vertex* vertices = staticMesh->GetVertices();
+            IndexType* indices = staticMesh->GetIndices();
+            if (vertices == nullptr || indices == nullptr)
+            {
+                continue;
+            }
+
+            const glm::mat4 transform = meshNode->GetTransform();
+
+            auto transformPos = [&](uint32_t idx) -> glm::vec3
+            {
+                const glm::vec3 p = vertices[idx].mPosition;
+                const glm::vec4 wp = transform * glm::vec4(p.x, p.y, p.z, 1.0f);
+                return glm::vec3(wp.x, wp.y, wp.z);
+            };
+
+            for (uint32_t i = 0; i + 2 < numIndices; i += 3)
+            {
+                const uint32_t ia = (uint32_t)indices[i + 0];
+                const uint32_t ib = (uint32_t)indices[i + 1];
+                const uint32_t ic = (uint32_t)indices[i + 2];
+
+                if (ia >= numVertices || ib >= numVertices || ic >= numVertices)
+                {
+                    continue;
+                }
+
+                glm::vec3 a = transformPos(ia);
+                glm::vec3 b = transformPos(ib);
+                glm::vec3 c = transformPos(ic);
+
+                const glm::vec3 n = glm::cross(b - a, c - a);
+                const float dblArea = glm::length(n);
+                if (dblArea <= 1.0e-5f)
+                {
+                    continue;
+                }
+
+                // Strict slope walkability filter (keep only floor/ramp triangles).
+                const glm::vec3 nNorm = n / dblArea;
+                const float kMaxSlopeDeg = 55.0f;
+                const float kMinUpDot = cosf(glm::radians(kMaxSlopeDeg));
+                if (nNorm.y < kMinUpDot)
+                {
+                    continue;
+                }
+
+                NavTriangle tri;
+                tri.mA = a;
+                tri.mB = b;
+                tri.mC = c;
+                tri.mCenter = (a + b + c) / 3.0f;
+                tri.mArea = 0.5f * dblArea;
+
+                const int32_t triIdx = (int32_t)outData.mTriangles.size();
+                outData.mTriangles.push_back(tri);
+
+                auto addEdge = [&](uint32_t v0, uint32_t v1)
+                {
+                    uint32_t gv0 = v0 + globalVertexBase;
+                    uint32_t gv1 = v1 + globalVertexBase;
+                    uint32_t lo = std::min(gv0, gv1);
+                    uint32_t hi = std::max(gv0, gv1);
+                    uint64_t key = ((uint64_t)lo << 32) | uint64_t(hi);
+                    edgeMap[key].push_back(triIdx);
+                };
+
+                addEdge(ia, ib);
+                addEdge(ib, ic);
+                addEdge(ic, ia);
+            }
+
+            globalVertexBase += numVertices;
+        }
+
+        for (auto& kv : edgeMap)
+        {
+            auto& tris = kv.second;
+            if (tris.size() == 2)
+            {
+                const int32_t a = tris[0];
+                const int32_t b = tris[1];
+                outData.mTriangles[a].mNeighbors.push_back(b);
+                outData.mTriangles[b].mNeighbors.push_back(a);
+            }
+        }
+
+        // Strict mode: shared-edge topology only (no proximity links).
+        return !outData.mTriangles.empty();
+    }
+
+    static int32_t FindClosestTriangle(const NavBuildData& navData, const glm::vec3& p)
+    {
+        int32_t bestIdx = -1;
+        float bestDistSq = FLT_MAX;
+
+        for (int32_t i = 0; i < (int32_t)navData.mTriangles.size(); ++i)
+        {
+            const NavTriangle& t = navData.mTriangles[i];
+            const glm::vec3 cp = ClosestPointOnTriangle(p, t.mA, t.mB, t.mC);
+            const glm::vec3 d = cp - p;
+            const float dsq = glm::dot(d, d);
+            if (dsq < bestDistSq)
+            {
+                bestDistSq = dsq;
+                bestIdx = i;
+            }
+        }
+
+        return bestIdx;
+    }
+
+    struct RecastNavData
+    {
+        dtNavMesh* mNavMesh = nullptr;
+        dtNavMeshQuery* mQuery = nullptr;
+
+        ~RecastNavData()
+        {
+            if (mQuery) dtFreeNavMeshQuery(mQuery);
+            if (mNavMesh) dtFreeNavMesh(mNavMesh);
+            mQuery = nullptr;
+            mNavMesh = nullptr;
+        }
+    };
+
+    static bool BuildRecastNavData(World* world, RecastNavData& outData);
+
+    static std::unordered_map<World*, std::unique_ptr<RecastNavData>> sWorldNavCache;
+
+    static std::string SanitizeName(const std::string& in)
+    {
+        std::string out = in;
+        for (char& c : out)
+        {
+            if (!(isalnum((unsigned char)c) || c == '_' || c == '-' || c == '.'))
+            {
+                c = '_';
+            }
+            c = (char)tolower((unsigned char)c);
+        }
+        return out;
+    }
+
+    static std::string GetNavBinPath(World* world)
+    {
+        std::string sceneName = "default";
+        Node* root = world ? world->GetRootNode() : nullptr;
+        if (root && root->GetScene())
+        {
+            sceneName = root->GetScene()->GetName();
+        }
+
+        sceneName = SanitizeName(sceneName);
+
+        std::string baseDir;
+        EngineState* state = GetEngineState();
+        if (state && !state->mProjectDirectory.empty())
+        {
+            baseDir = state->mProjectDirectory + "Assets/";
+#if !(PLATFORM_GAMECUBE || PLATFORM_DOLPHIN)
+            if (!DoesDirExist(baseDir.c_str()))
+            {
+                CreateDir(baseDir.c_str());
+            }
+#endif
+        }
+        else
+        {
+            baseDir = "Assets/";
+#if !(PLATFORM_GAMECUBE || PLATFORM_DOLPHIN)
+            if (!DoesDirExist(baseDir.c_str())) CreateDir(baseDir.c_str());
+#endif
+        }
+
+        return baseDir + sceneName + ".navbin";
+    }
+
+    static bool SaveNavBin(const RecastNavData& nav, const std::string& path)
+    {
+        if (!nav.mNavMesh)
+        {
+            return false;
+        }
+
+        const dtMeshTile* tile = nullptr;
+        const dtNavMesh* constNav = nav.mNavMesh;
+        for (int i = 0; i < constNav->getMaxTiles(); ++i)
+        {
+            const dtMeshTile* t = constNav->getTile(i);
+            if (t && t->data && t->dataSize > 0)
+            {
+                tile = t;
+                break;
+            }
+        }
+
+        if (!tile)
+        {
+            return false;
+        }
+
+        std::ofstream out(path, std::ios::binary);
+        if (!out.is_open())
+        {
+            return false;
+        }
+
+        const uint32_t magic = 0x4E415642; // NAVB
+        const uint32_t version = 1;
+        const uint32_t size = (uint32_t)tile->dataSize;
+
+        out.write((const char*)&magic, sizeof(magic));
+        out.write((const char*)&version, sizeof(version));
+        out.write((const char*)&size, sizeof(size));
+        out.write((const char*)tile->data, size);
+        return out.good();
+    }
+
+    static bool InitNavFromBytes(const unsigned char* bytes, uint32_t totalSize, RecastNavData& outData)
+    {
+        if (totalSize < 12)
+        {
+            return false;
+        }
+
+        uint32_t magic = 0;
+        uint32_t version = 0;
+        uint32_t size = 0;
+        memcpy(&magic, bytes + 0, sizeof(magic));
+        memcpy(&version, bytes + 4, sizeof(version));
+        memcpy(&size, bytes + 8, sizeof(size));
+
+        if (magic != 0x4E415642 || version != 1 || size == 0 || (12u + size) > totalSize)
+        {
+            return false;
+        }
+
+        unsigned char* navData = (unsigned char*)dtAlloc(size, DT_ALLOC_PERM);
+        if (!navData)
+        {
+            return false;
+        }
+
+        memcpy(navData, bytes + 12, size);
+
+        outData.mNavMesh = dtAllocNavMesh();
+        if (!outData.mNavMesh)
+        {
+            dtFree(navData);
+            return false;
+        }
+
+        if (dtStatusFailed(outData.mNavMesh->init(navData, (int)size, DT_TILE_FREE_DATA)))
+        {
+            return false;
+        }
+
+        outData.mQuery = dtAllocNavMeshQuery();
+        if (!outData.mQuery)
+        {
+            return false;
+        }
+
+        return !dtStatusFailed(outData.mQuery->init(outData.mNavMesh, 2048));
+    }
+
+    static bool InitNavFromAnyBytes(const unsigned char* bytes, uint32_t totalSize, RecastNavData& outData)
+    {
+        return InitNavFromBytes(bytes, totalSize, outData);
+    }
+
+    static bool LoadNavBin(const std::string& path, RecastNavData& outData)
+    {
+        if (!SYS_DoesFileExist(path.c_str(), false))
+        {
+            return false;
+        }
+
+        Stream stream;
+        if (!stream.ReadFile(path.c_str(), false))
+        {
+            return false;
+        }
+
+        // Legacy raw NAVB blob.
+        std::vector<unsigned char> bytes((size_t)stream.GetSize());
+        if (stream.GetSize() > 0)
+        {
+            memcpy(bytes.data(), stream.GetData(), stream.GetSize());
+        }
+
+        return InitNavFromBytes(bytes.data(), (uint32_t)bytes.size(), outData);
+    }
+
+    static bool LoadEmbeddedNavBin(const std::string& path, RecastNavData& outData)
+    {
+        const EngineConfig* cfg = GetEngineConfig();
+        if (!cfg || !cfg->mEmbeddedAssets || cfg->mEmbeddedAssetCount == 0)
+        {
+            return false;
+        }
+
+        auto basenameOf = [](const std::string& p) -> std::string
+        {
+            size_t s1 = p.find_last_of('/');
+            size_t s2 = p.find_last_of('\\');
+            size_t s = std::string::npos;
+            if (s1 != std::string::npos && s2 != std::string::npos) s = std::max(s1, s2);
+            else s = (s1 != std::string::npos) ? s1 : s2;
+            return (s == std::string::npos) ? p : p.substr(s + 1);
+        };
+
+        auto endsWith = [](const std::string& s, const std::string& suf) -> bool
+        {
+            return s.size() >= suf.size() && s.compare(s.size() - suf.size(), suf.size(), suf) == 0;
+        };
+
+        const std::string wantBase = basenameOf(path);
+
+        // Pass 1: exact or basename match.
+        for (uint32_t i = 0; i < cfg->mEmbeddedAssetCount; ++i)
+        {
+            const EmbeddedFile& ef = cfg->mEmbeddedAssets[i];
+            if (!ef.mName || !ef.mData || ef.mSize == 0)
+            {
+                continue;
+            }
+
+            std::string n = ef.mName;
+            if (n == path || basenameOf(n) == wantBase)
+            {
+                LogDebug("Loading embedded navmesh: %s", n.c_str());
+                return InitNavFromBytes((const unsigned char*)ef.mData, ef.mSize, outData);
+            }
+        }
+
+        // Pass 2: fallback to any embedded nav blob (single-scene packaged case).
+        for (uint32_t i = 0; i < cfg->mEmbeddedAssetCount; ++i)
+        {
+            const EmbeddedFile& ef = cfg->mEmbeddedAssets[i];
+            if (!ef.mName || !ef.mData || ef.mSize == 0)
+            {
+                continue;
+            }
+
+            std::string n = ef.mName;
+            if (endsWith(n, ".navbin"))
+            {
+                LogWarning("Embedded navmesh exact match failed; using fallback: %s", n.c_str());
+                return InitNavFromBytes((const unsigned char*)ef.mData, ef.mSize, outData);
+            }
+        }
+
+        return false;
+    }
+
+    static void InvalidateWorldNavCache(World* world)
+    {
+        sWorldNavCache.erase(world);
+    }
+
+    static RecastNavData* GetOrBuildWorldNav(World* world)
+    {
+        auto it = sWorldNavCache.find(world);
+        if (it != sWorldNavCache.end() && it->second && it->second->mQuery)
+        {
+            if (world->GetNavMeshStatus() == "Uninitialized")
+            {
+                world->SetNavMeshStatus("Using cached navmesh", "runtime");
+            }
+            return it->second.get();
+        }
+
+        std::unique_ptr<RecastNavData> nav = std::make_unique<RecastNavData>();
+        if (!BuildRecastNavData(world, *nav))
+        {
+            world->SetNavMeshStatus("Navmesh build failed", "runtime");
+            return nullptr;
+        }
+
+        world->SetNavMeshStatus("Built runtime navmesh", "runtime");
+
+        RecastNavData* ret = nav.get();
+        sWorldNavCache[world] = std::move(nav);
+        return ret;
+    }
+
+    static bool GatherNavTriangles(World* world, std::vector<float>& outVerts, std::vector<int>& outTris)
+    {
+        std::vector<StaticMesh3D*> navMeshes;
+        world->FindNodes<StaticMesh3D>(navMeshes);
+
+        for (StaticMesh3D* meshNode : navMeshes)
+        {
+            if (meshNode == nullptr || !meshNode->IsNavmeshReady())
+            {
+                continue;
+            }
+
+            StaticMesh* staticMesh = meshNode->GetStaticMesh();
+            if (staticMesh == nullptr)
+            {
+                continue;
+            }
+
+            Vertex* vertices = staticMesh->GetVertices();
+            IndexType* indices = staticMesh->GetIndices();
+            const uint32_t numVertices = staticMesh->GetNumVertices();
+            const uint32_t numIndices = staticMesh->GetNumIndices();
+
+            if (!vertices || !indices || numVertices == 0 || numIndices < 3)
+            {
+                continue;
+            }
+
+            const int baseVert = (int)(outVerts.size() / 3);
+            const glm::mat4 transform = meshNode->GetTransform();
+
+            for (uint32_t i = 0; i < numVertices; ++i)
+            {
+                glm::vec3 p = vertices[i].mPosition;
+                glm::vec4 wp = transform * glm::vec4(p, 1.0f);
+                outVerts.push_back(wp.x);
+                outVerts.push_back(wp.y);
+                outVerts.push_back(wp.z);
+            }
+
+            for (uint32_t i = 0; i + 2 < numIndices; i += 3)
+            {
+                const int ia = baseVert + (int)indices[i + 0];
+                const int ib = baseVert + (int)indices[i + 1];
+                const int ic = baseVert + (int)indices[i + 2];
+                outTris.push_back(ia);
+                outTris.push_back(ib);
+                outTris.push_back(ic);
+            }
+        }
+
+        return !outVerts.empty() && !outTris.empty();
+    }
+
+    static bool BuildRecastNavData(World* world, RecastNavData& outData)
+    {
+        std::vector<float> verts;
+        std::vector<int> tris;
+        if (!GatherNavTriangles(world, verts, tris))
+        {
+            return false;
+        }
+
+        float bmin[3], bmax[3];
+        rcCalcBounds(verts.data(), (int)verts.size() / 3, bmin, bmax);
+
+        rcConfig cfg{};
+        cfg.cs = 0.3f;
+        cfg.ch = 0.2f;
+        cfg.walkableSlopeAngle = 55.0f;
+        cfg.walkableHeight = (int)ceilf(2.0f / cfg.ch);
+        cfg.walkableClimb = (int)floorf(0.9f / cfg.ch);
+        cfg.walkableRadius = (int)ceilf(0.4f / cfg.cs);
+        cfg.maxEdgeLen = (int)(12.0f / cfg.cs);
+        cfg.maxSimplificationError = 1.3f;
+        cfg.minRegionArea = (int)rcSqr(8);
+        cfg.mergeRegionArea = (int)rcSqr(20);
+        cfg.maxVertsPerPoly = 6;
+        cfg.detailSampleDist = 6.0f;
+        cfg.detailSampleMaxError = 1.0f;
+
+        rcVcopy(cfg.bmin, bmin);
+        rcVcopy(cfg.bmax, bmax);
+        rcCalcGridSize(cfg.bmin, cfg.bmax, cfg.cs, &cfg.width, &cfg.height);
+
+        rcContext ctx(false);
+        rcHeightfield* solid = rcAllocHeightfield();
+        if (!solid) return false;
+
+        bool ok = false;
+        unsigned char* triAreas = nullptr;
+        rcCompactHeightfield* chf = nullptr;
+        rcContourSet* cset = nullptr;
+        rcPolyMesh* pmesh = nullptr;
+        rcPolyMeshDetail* dmesh = nullptr;
+
+        do {
+            if (!rcCreateHeightfield(&ctx, *solid, cfg.width, cfg.height, cfg.bmin, cfg.bmax, cfg.cs, cfg.ch)) break;
+
+            const int ntris = (int)tris.size() / 3;
+            triAreas = new unsigned char[ntris];
+            memset(triAreas, 0, ntris * sizeof(unsigned char));
+            rcMarkWalkableTriangles(&ctx, cfg.walkableSlopeAngle, verts.data(), (int)verts.size() / 3, tris.data(), ntris, triAreas);
+            if (!rcRasterizeTriangles(&ctx, verts.data(), (int)verts.size() / 3, tris.data(), triAreas, ntris, *solid, cfg.walkableClimb)) break;
+
+            rcFilterLowHangingWalkableObstacles(&ctx, cfg.walkableClimb, *solid);
+            rcFilterLedgeSpans(&ctx, cfg.walkableHeight, cfg.walkableClimb, *solid);
+            rcFilterWalkableLowHeightSpans(&ctx, cfg.walkableHeight, *solid);
+
+            chf = rcAllocCompactHeightfield();
+            if (!chf) break;
+            if (!rcBuildCompactHeightfield(&ctx, cfg.walkableHeight, cfg.walkableClimb, *solid, *chf)) break;
+
+            if (!rcErodeWalkableArea(&ctx, cfg.walkableRadius, *chf)) break;
+            if (!rcBuildDistanceField(&ctx, *chf)) break;
+            if (!rcBuildRegions(&ctx, *chf, 0, cfg.minRegionArea, cfg.mergeRegionArea)) break;
+
+            cset = rcAllocContourSet();
+            if (!cset) break;
+            if (!rcBuildContours(&ctx, *chf, cfg.maxSimplificationError, cfg.maxEdgeLen, *cset)) break;
+
+            pmesh = rcAllocPolyMesh();
+            if (!pmesh) break;
+            if (!rcBuildPolyMesh(&ctx, *cset, cfg.maxVertsPerPoly, *pmesh)) break;
+
+            dmesh = rcAllocPolyMeshDetail();
+            if (!dmesh) break;
+            if (!rcBuildPolyMeshDetail(&ctx, *pmesh, *chf, cfg.detailSampleDist, cfg.detailSampleMaxError, *dmesh)) break;
+
+            for (int i = 0; i < pmesh->npolys; ++i)
+            {
+                pmesh->flags[i] = 1;
+                pmesh->areas[i] = 0;
+            }
+
+            dtNavMeshCreateParams params{};
+            params.verts = pmesh->verts;
+            params.vertCount = pmesh->nverts;
+            params.polys = pmesh->polys;
+            params.polyAreas = pmesh->areas;
+            params.polyFlags = pmesh->flags;
+            params.polyCount = pmesh->npolys;
+            params.nvp = pmesh->nvp;
+            params.detailMeshes = dmesh->meshes;
+            params.detailVerts = dmesh->verts;
+            params.detailVertsCount = dmesh->nverts;
+            params.detailTris = dmesh->tris;
+            params.detailTriCount = dmesh->ntris;
+            params.walkableHeight = 2.0f;
+            params.walkableRadius = 0.4f;
+            params.walkableClimb = 0.9f;
+            rcVcopy(params.bmin, pmesh->bmin);
+            rcVcopy(params.bmax, pmesh->bmax);
+            params.cs = cfg.cs;
+            params.ch = cfg.ch;
+            params.buildBvTree = true;
+
+            unsigned char* navData = nullptr;
+            int navDataSize = 0;
+            if (!dtCreateNavMeshData(&params, &navData, &navDataSize)) break;
+
+            outData.mNavMesh = dtAllocNavMesh();
+            if (!outData.mNavMesh) break;
+            if (dtStatusFailed(outData.mNavMesh->init(navData, navDataSize, DT_TILE_FREE_DATA))) break;
+
+            outData.mQuery = dtAllocNavMeshQuery();
+            if (!outData.mQuery) break;
+            if (dtStatusFailed(outData.mQuery->init(outData.mNavMesh, 2048))) break;
+
+            ok = true;
+        } while (false);
+
+        delete[] triAreas;
+        rcFreePolyMeshDetail(dmesh);
+        rcFreePolyMesh(pmesh);
+        rcFreeContourSet(cset);
+        rcFreeCompactHeightfield(chf);
+        rcFreeHeightField(solid);
+
+        return ok;
+    }
+}
 
 std::unordered_set<NodePtrWeak> World::sNewlyRegisteredNodes;
 
@@ -84,6 +763,7 @@ World::World() :
 
 void World::Destroy()
 {
+    InvalidateWorldNavCache(this);
     DestroyRootNode();
 
     OCT_ASSERT(mRootNode == nullptr);
@@ -118,6 +798,7 @@ void World::SetRootNode(Node* node)
 {
     if (mRootNode != node)
     {
+        InvalidateWorldNavCache(this);
         if (mRootNode != nullptr)
         {
             if (IsPlaying())
@@ -304,8 +985,151 @@ void World::GatherNodes(std::vector<Node*>& outNodes)
     }
 }
 
+bool World::FindNavPath(glm::vec3 start, glm::vec3 end, std::vector<glm::vec3>& outPath)
+{
+    outPath.clear();
+
+    RecastNavData* nav = GetOrBuildWorldNav(this);
+    if (!nav || !nav->mQuery)
+    {
+        return false;
+    }
+
+    const float ext[3] = { 2.0f, 4.0f, 2.0f };
+    const float startPt[3] = { start.x, start.y, start.z };
+    const float endPt[3] = { end.x, end.y, end.z };
+
+    dtQueryFilter filter;
+    filter.setIncludeFlags(0xffff);
+    filter.setExcludeFlags(0);
+
+    dtPolyRef startRef = 0;
+    dtPolyRef endRef = 0;
+    float nearestStart[3];
+    float nearestEnd[3];
+
+    if (dtStatusFailed(nav->mQuery->findNearestPoly(startPt, ext, &filter, &startRef, nearestStart)) || startRef == 0)
+    {
+        return false;
+    }
+
+    if (dtStatusFailed(nav->mQuery->findNearestPoly(endPt, ext, &filter, &endRef, nearestEnd)) || endRef == 0)
+    {
+        return false;
+    }
+
+    dtPolyRef polys[2048];
+    int npolys = 0;
+    if (dtStatusFailed(nav->mQuery->findPath(startRef, endRef, nearestStart, nearestEnd, &filter, polys, &npolys, 2048)) || npolys <= 0)
+    {
+        return false;
+    }
+
+    float straight[2048 * 3];
+    unsigned char straightFlags[2048];
+    dtPolyRef straightPolys[2048];
+    int nstraight = 0;
+
+    if (dtStatusFailed(nav->mQuery->findStraightPath(nearestStart, nearestEnd, polys, npolys,
+        straight, straightFlags, straightPolys, &nstraight, 2048, DT_STRAIGHTPATH_ALL_CROSSINGS)) || nstraight <= 0)
+    {
+        return false;
+    }
+
+    outPath.reserve((size_t)nstraight);
+    for (int i = 0; i < nstraight; ++i)
+    {
+        outPath.push_back(glm::vec3(straight[i * 3 + 0], straight[i * 3 + 1], straight[i * 3 + 2]));
+    }
+
+    return !outPath.empty();
+}
+
+bool World::FindRandomNavPoint(glm::vec3& outPoint)
+{
+    RecastNavData* nav = GetOrBuildWorldNav(this);
+    if (!nav || !nav->mQuery)
+    {
+        return false;
+    }
+
+    dtQueryFilter filter;
+    filter.setIncludeFlags(0xffff);
+    filter.setExcludeFlags(0);
+
+    dtPolyRef ref = 0;
+    float pt[3] = {};
+    auto frand = []() -> float { return Maths::RandRange(0.0f, 1.0f); };
+
+    if (dtStatusFailed(nav->mQuery->findRandomPoint(&filter, frand, &ref, pt)) || ref == 0)
+    {
+        return false;
+    }
+
+    outPoint = glm::vec3(pt[0], pt[1], pt[2]);
+    return true;
+}
+
+bool World::FindClosestNavPoint(glm::vec3 inPoint, glm::vec3& outPoint)
+{
+    RecastNavData* nav = GetOrBuildWorldNav(this);
+    if (!nav || !nav->mQuery)
+    {
+        return false;
+    }
+
+    dtQueryFilter filter;
+    filter.setIncludeFlags(0xffff);
+    filter.setExcludeFlags(0);
+
+    const float ext[3] = { 2.0f, 4.0f, 2.0f };
+    const float inPt[3] = { inPoint.x, inPoint.y, inPoint.z };
+    dtPolyRef ref = 0;
+    float outPt[3] = {};
+
+    if (dtStatusFailed(nav->mQuery->findNearestPoly(inPt, ext, &filter, &ref, outPt)) || ref == 0)
+    {
+        return false;
+    }
+
+    outPoint = glm::vec3(outPt[0], outPt[1], outPt[2]);
+    return true;
+}
+
+bool World::BakeNavMesh()
+{
+    InvalidateWorldNavCache(this);
+    RecastNavData* nav = GetOrBuildWorldNav(this);
+    return (nav != nullptr && nav->mQuery != nullptr);
+}
+
+void World::ClearNavMeshCache()
+{
+    InvalidateWorldNavCache(this);
+    const std::string path = GetNavBinPath(this);
+    std::remove(path.c_str());
+    SetNavMeshStatus("Navmesh cache cleared", path);
+}
+
+const std::string& World::GetNavMeshStatus() const
+{
+    return mNavMeshStatus;
+}
+
+const std::string& World::GetNavMeshPath() const
+{
+    return mNavMeshPath;
+}
+
+void World::SetNavMeshStatus(const std::string& status, const std::string& path)
+{
+    mNavMeshStatus = status;
+    mNavMeshPath = path;
+}
+
 void World::Clear()
 {
+    InvalidateWorldNavCache(this);
     DestroyRootNode();
 }
 
@@ -1242,3 +2066,11 @@ Node* World::SpawnDefaultRoot()
 
     return mRootNode.Get();
 }
+
+
+
+
+
+
+
+

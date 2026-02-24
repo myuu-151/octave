@@ -196,6 +196,68 @@ int World_Lua::FindNodesWithName(lua_State* L)
     return 1;
 }
 
+int World_Lua::FindNavPath(lua_State* L)
+{
+    World* world = CHECK_WORLD(L, 1);
+    glm::vec3 start = CHECK_VECTOR(L, 2);
+    glm::vec3 end = CHECK_VECTOR(L, 3);
+
+    std::vector<glm::vec3> path;
+    const bool success = world->FindNavPath(start, end, path);
+
+    lua_newtable(L);
+    int retIdx = lua_gettop(L);
+    lua_pushboolean(L, success);
+    lua_setfield(L, retIdx, "success");
+
+    lua_newtable(L);
+    int pathIdx = lua_gettop(L);
+    for (uint32_t i = 0; i < path.size(); ++i)
+    {
+        lua_pushinteger(L, (int)i + 1);
+        Vector_Lua::Create(L, path[i]);
+        lua_settable(L, pathIdx);
+    }
+    lua_setfield(L, retIdx, "points");
+
+    return 1;
+}
+
+int World_Lua::FindRandomNavPoint(lua_State* L)
+{
+    World* world = CHECK_WORLD(L, 1);
+
+    glm::vec3 point = {};
+    const bool success = world->FindRandomNavPoint(point);
+
+    if (!success)
+    {
+        lua_pushnil(L);
+        return 1;
+    }
+
+    Vector_Lua::Create(L, point);
+    return 1;
+}
+
+int World_Lua::FindClosestNavPoint(lua_State* L)
+{
+    World* world = CHECK_WORLD(L, 1);
+    glm::vec3 inPoint = CHECK_VECTOR(L, 2);
+
+    glm::vec3 outPoint = {};
+    const bool success = world->FindClosestNavPoint(inPoint, outPoint);
+
+    if (!success)
+    {
+        lua_pushnil(L);
+        return 1;
+    }
+
+    Vector_Lua::Create(L, outPoint);
+    return 1;
+}
+
 int World_Lua::SetAmbientLightColor(lua_State* L)
 {
     World* world = CHECK_WORLD(L, 1);
@@ -527,6 +589,10 @@ void World_Lua::Bind()
     REGISTER_TABLE_FUNC(L, mtIndex, FindNodesWithTag);
 
     REGISTER_TABLE_FUNC(L, mtIndex, FindNodesWithName);
+
+    REGISTER_TABLE_FUNC(L, mtIndex, FindNavPath);
+    REGISTER_TABLE_FUNC(L, mtIndex, FindRandomNavPoint);
+    REGISTER_TABLE_FUNC(L, mtIndex, FindClosestNavPoint);
 
     REGISTER_TABLE_FUNC(L, mtIndex, SetAmbientLightColor);
 

@@ -4267,6 +4267,40 @@ static void DrawViewportPanel()
             am->DeleteAllNodes();
         if (ImGui::Selectable("Bake Lighting"))
             renderer->BeginLightBake();
+
+        if (ImGui::Selectable("Bake Navmesh"))
+        {
+            World* world = GetWorld(0);
+            if (world)
+            {
+                const bool ok = world->BakeNavMesh();
+                LogDebug(ok ? "Navmesh baked." : "Navmesh bake failed.");
+            }
+        }
+
+        if (ImGui::Selectable("Clear Navmesh Cache"))
+        {
+            World* world = GetWorld(0);
+            if (world)
+            {
+                world->ClearNavMeshCache();
+                LogDebug("Navmesh cache cleared.");
+            }
+        }
+
+        {
+            World* world = GetWorld(0);
+            if (world)
+            {
+                ImGui::Separator();
+                ImGui::TextDisabled("Navmesh: %s", world->GetNavMeshStatus().c_str());
+                if (!world->GetNavMeshPath().empty())
+                {
+                    ImGui::TextDisabled("Path: %s", world->GetNavMeshPath().c_str());
+                }
+            }
+        }
+
         if (ImGui::Selectable("Clear Baked Lighting"))
         {
             const std::vector<Node*>& nodes = GetWorld(0)->GatherNodes();

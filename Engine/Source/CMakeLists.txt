@@ -54,6 +54,10 @@ if(NEEDS_VULKAN)
 endif()
 
 file(GLOB_RECURSE SRC *.cpp *.c *.h)
+file(GLOB_RECURSE RECAST_SRC
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../External/recastnavigation/Recast/Source/*.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../External/recastnavigation/Detour/Source/*.cpp
+)
 set(COMMON_DEPS
     ${PLATFORM_DEPS}
     imgui
@@ -67,6 +71,7 @@ set(TARGET EngineEditorLib)
 
 add_library(${TARGET} STATIC
     ${SRC}
+    ${RECAST_SRC}
 )
 target_include_directories(${TARGET} PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
@@ -74,6 +79,8 @@ target_include_directories(${TARGET} PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/Engine
     ${BULLET_PHYSICS_SOURCE_DIR}/src
     ${CMAKE_CURRENT_SOURCE_DIR}/../../External/Assimp/contrib/rapidjson
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../External/recastnavigation/Recast/Include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../External/recastnavigation/Detour/Include
 )
 target_link_libraries(${TARGET} PUBLIC
     ${COMMON_DEPS}
@@ -91,11 +98,14 @@ set(TARGET EngineGameLib)
 file(GLOB_RECURSE SRC *.cpp *.c *.h)
 add_library(${TARGET} STATIC
     ${SRC}
+    ${RECAST_SRC}
 )
 target_include_directories(${TARGET} PUBLIC 
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/Engine
     ${BULLET_PHYSICS_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../External/recastnavigation/Recast/Include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../External/recastnavigation/Detour/Include
 )
 target_link_libraries(${TARGET} PUBLIC
     ${COMMON_DEPS}

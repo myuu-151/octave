@@ -4,11 +4,45 @@
 .SUFFIXES:
 .SECONDARY:
 #---------------------------------------------------------------------------------
+# Auto-heal DEVKITPRO/DEVKITPPC for mixed Windows+WSL setups.
+ifeq ($(wildcard $(DEVKITPRO)/libogc2/gamecube_rules),)
+ifeq ($(wildcard $(DEVKITPRO)/libogc/gamecube_rules),)
+ifneq ($(wildcard /mnt/c/devkitPro/libogc2/gamecube_rules),)
+DEVKITPRO := /mnt/c/devkitPro
+endif
+ifneq ($(wildcard /mnt/c/devkitPro/libogc/gamecube_rules),)
+DEVKITPRO := /mnt/c/devkitPro
+endif
+ifneq ($(wildcard /c/devkitPro/libogc2/gamecube_rules),)
+DEVKITPRO := /c/devkitPro
+endif
+ifneq ($(wildcard /c/devkitPro/libogc/gamecube_rules),)
+DEVKITPRO := /c/devkitPro
+endif
+endif
+endif
+
+ifeq ($(strip $(DEVKITPPC)),)
+ifneq ($(strip $(DEVKITPRO)),)
+ifneq ($(wildcard $(DEVKITPRO)/devkitPPC),)
+DEVKITPPC := $(DEVKITPRO)/devkitPPC
+endif
+endif
+endif
+
 ifeq ($(strip $(DEVKITPPC)),)
 $(error "Please set DEVKITPPC in your environment. export DEVKITPPC=<path to>devkitPPC")
 endif
 
+ifeq ($(wildcard $(DEVKITPPC)/gamecube_rules),)
+ifeq ($(wildcard $(DEVKITPRO)/libogc2/gamecube_rules),)
+include $(DEVKITPRO)/libogc/gamecube_rules
+else
 include $(DEVKITPRO)/libogc2/gamecube_rules
+endif
+else
+include $(DEVKITPPC)/gamecube_rules
+endif
 
 #---------------------------------------------------------------------------------
 # TARGET is the name of the output

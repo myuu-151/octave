@@ -70,8 +70,10 @@ void SYS_Initialize()
     VIDEO_WaitVSync();
     VIDEO_WaitVSync();
 #else
-    VIDEO_WaitForFlush();
-    engine.mAspectRatioScale = VIDEO_GetAspectRatio() / ((float)engine.mWindowWidth / engine.mWindowHeight);
+    // Older/newer libogc variants may not expose VIDEO_WaitForFlush / VIDEO_GetAspectRatio.
+    VIDEO_WaitVSync();
+    VIDEO_WaitVSync();
+    engine.mAspectRatioScale = 1.0f;
 #endif
 
 #if ENABLE_LIBOGC_CONSOLE
@@ -459,7 +461,7 @@ static void MountMemoryCard()
     if (!IsMemoryCardMounted())
     {
         LogDebug("Initializing CARD");
-        GetEngineState()->mSystem.mMemoryCardMountArea = SYS_AlignedMalloc(CARD_WORKAREA, 32);
+        GetEngineState()->mSystem.mMemoryCardMountArea = SYS_AlignedMalloc(CARD_WORKAREA_SIZE, 32);
         CARD_Init("OCTA","00");
         int errorSlotA = CARD_Mount(CARD_SLOTA, GetEngineState()->mSystem.mMemoryCardMountArea, UnmountMemoryCard);
         LogDebug("Memory card code: %d", errorSlotA);
@@ -715,18 +717,13 @@ void SYS_Log(LogSeverity severity, const char* format, va_list arg)
 {
     // SYS_Report() allows logging in Dolphin with a .dol file.
     // Printf logging requires .elf.
-#if PLATFORM_WII
-    // Not sure if there's a way to turn the va_list back into a variadic args
-    // to pass to SYS_Report, so just vsprintf it to a buffer first.
-    char logBuffer[256];
-    vsnprintf(logBuffer, 255, format, arg);
+    // Use buffered report path for all Dolphin/GC/Wii variants for compatibility.
+    char logBuffer[512];
+    vsnprintf(logBuffer, sizeof(logBuffer) - 1, format, arg);
+    logBuffer[sizeof(logBuffer) - 1] = '\0';
 
     SYS_Report(logBuffer);
     SYS_Report("\n");
-#else
-    SYS_Reportv(format, arg);
-    SYS_Report("\n");
-#endif
 
     // I'm not sure if printf() is needed for the libogc console, but the console
     // is currently broken right now and causes octave to crash.

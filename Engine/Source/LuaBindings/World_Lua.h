@@ -32,6 +32,9 @@ struct World_Lua
     static int FindNode(lua_State* L);
     static int FindNodesWithTag(lua_State* L);
     static int FindNodesWithName(lua_State* L);
+    static int FindNavPath(lua_State* L);
+    static int FindRandomNavPoint(lua_State* L);
+    static int FindClosestNavPoint(lua_State* L);
 
     static int SetAmbientLightColor(lua_State* L);
     static int GetAmbientLightColor(lua_State* L);

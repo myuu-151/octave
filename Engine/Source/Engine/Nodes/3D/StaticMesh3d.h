@@ -36,6 +36,9 @@ public:
     void SetUseTriangleCollision(bool triangleCol);
     bool GetUseTriangleCollision() const;
 
+    void SetNavmeshReady(bool navmeshReady);
+    bool IsNavmeshReady() const;
+
     void SetBakeLighting(bool bake);
     bool GetBakeLighting() const;
 
@@ -65,6 +68,7 @@ protected:
     StaticMeshRef mStaticMesh;
     std::vector<uint32_t> mInstanceColors; // e.g. baked lighting color
     bool mUseTriangleCollision;
+    bool mNavmeshReady;
     bool mBakeLighting;
     bool mHasBakedLighting;
 
