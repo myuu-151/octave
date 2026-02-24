@@ -20,11 +20,6 @@ bool Box3D::HandlePropChange(Datum* datum, uint32_t index, const void* newValue)
         boxComp->SetExtents(*(glm::vec3*)newValue);
         success = true;
     }
-    else if (prop->mName == "Nav Bounds")
-    {
-        boxComp->SetNavBounds(*(bool*)newValue);
-        success = true;
-    }
 
     return success;
 }
@@ -100,16 +95,6 @@ void Box3D::SetExtents(glm::vec3 extents)
         mExtents = extents;
         UpdateRigidBody();
     }
-}
-
-void Box3D::SetNavBounds(bool navBounds)
-{
-    mNavBounds = navBounds;
-}
-
-bool Box3D::IsNavBounds() const
-{
-    return mNavBounds;
 }
 
 Bounds Box3D::GetLocalBounds() const

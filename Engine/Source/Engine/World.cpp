@@ -12,7 +12,6 @@
 #include "Assets/Scene.h"
 #include "Assets/StaticMesh.h"
 #include "Nodes/3D/StaticMesh3d.h"
-#include "Nodes/3D/Box3d.h"
 #include "Nodes/3D/NavMesh3d.h"
 #include "Nodes/3D/PointLight3d.h"
 #include "Nodes/3D/Particle3d.h"
@@ -43,209 +42,6 @@ using namespace std;
 
 namespace
 {
-    struct NavTriangle
-    {
-        glm::vec3 mA;
-        glm::vec3 mB;
-        glm::vec3 mC;
-        glm::vec3 mCenter;
-        float mArea = 0.0f;
-        std::vector<int32_t> mNeighbors;
-    };
-
-    struct NavBuildData
-    {
-        std::vector<NavTriangle> mTriangles;
-    };
-
-    static glm::vec3 ClosestPointOnTriangle(const glm::vec3& p, const glm::vec3& a, const glm::vec3& b, const glm::vec3& c)
-    {
-        const glm::vec3 ab = b - a;
-        const glm::vec3 ac = c - a;
-        const glm::vec3 ap = p - a;
-
-        const float d1 = glm::dot(ab, ap);
-        const float d2 = glm::dot(ac, ap);
-        if (d1 <= 0.0f && d2 <= 0.0f) return a;
-
-        const glm::vec3 bp = p - b;
-        const float d3 = glm::dot(ab, bp);
-        const float d4 = glm::dot(ac, bp);
-        if (d3 >= 0.0f && d4 <= d3) return b;
-
-        const float vc = d1 * d4 - d3 * d2;
-        if (vc <= 0.0f && d1 >= 0.0f && d3 <= 0.0f)
-        {
-            const float v = d1 / (d1 - d3);
-            return a + v * ab;
-        }
-
-        const glm::vec3 cp = p - c;
-        const float d5 = glm::dot(ab, cp);
-        const float d6 = glm::dot(ac, cp);
-        if (d6 >= 0.0f && d5 <= d6) return c;
-
-        const float vb = d5 * d2 - d1 * d6;
-        if (vb <= 0.0f && d2 >= 0.0f && d6 <= 0.0f)
-        {
-            const float w = d2 / (d2 - d6);
-            return a + w * ac;
-        }
-
-        const float va = d3 * d6 - d5 * d4;
-        if (va <= 0.0f && (d4 - d3) >= 0.0f && (d5 - d6) >= 0.0f)
-        {
-            const float w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
-            return b + w * (c - b);
-        }
-
-        const float denom = 1.0f / (va + vb + vc);
-        const float v = vb * denom;
-        const float w = vc * denom;
-        return a + ab * v + ac * w;
-    }
-
-    static bool BuildNavData(World* world, NavBuildData& outData)
-    {
-        std::vector<StaticMesh3D*> navMeshes;
-        world->FindNodes<StaticMesh3D>(navMeshes);
-
-        std::unordered_map<uint64_t, std::vector<int32_t>> edgeMap;
-
-        uint32_t globalVertexBase = 0;
-
-        for (StaticMesh3D* meshNode : navMeshes)
-        {
-            if (meshNode == nullptr || !meshNode->IsNavmeshReady())
-            {
-                continue;
-            }
-
-            StaticMesh* staticMesh = meshNode->GetStaticMesh();
-            if (staticMesh == nullptr)
-            {
-                continue;
-            }
-
-            const uint32_t numIndices = staticMesh->GetNumIndices();
-            const uint32_t numVertices = staticMesh->GetNumVertices();
-            if (numIndices < 3 || numVertices == 0)
-            {
-                continue;
-            }
-
-            Vertex* vertices = staticMesh->GetVertices();
-            IndexType* indices = staticMesh->GetIndices();
-            if (vertices == nullptr || indices == nullptr)
-            {
-                continue;
-            }
-
-            const glm::mat4 transform = meshNode->GetTransform();
-
-            auto transformPos = [&](uint32_t idx) -> glm::vec3
-            {
-                const glm::vec3 p = vertices[idx].mPosition;
-                const glm::vec4 wp = transform * glm::vec4(p.x, p.y, p.z, 1.0f);
-                return glm::vec3(wp.x, wp.y, wp.z);
-            };
-
-            for (uint32_t i = 0; i + 2 < numIndices; i += 3)
-            {
-                const uint32_t ia = (uint32_t)indices[i + 0];
-                const uint32_t ib = (uint32_t)indices[i + 1];
-                const uint32_t ic = (uint32_t)indices[i + 2];
-
-                if (ia >= numVertices || ib >= numVertices || ic >= numVertices)
-                {
-                    continue;
-                }
-
-                glm::vec3 a = transformPos(ia);
-                glm::vec3 b = transformPos(ib);
-                glm::vec3 c = transformPos(ic);
-
-                const glm::vec3 n = glm::cross(b - a, c - a);
-                const float dblArea = glm::length(n);
-                if (dblArea <= 1.0e-5f)
-                {
-                    continue;
-                }
-
-                // Strict slope walkability filter (keep only floor/ramp triangles).
-                const glm::vec3 nNorm = n / dblArea;
-                const float kMaxSlopeDeg = 55.0f;
-                const float kMinUpDot = cosf(glm::radians(kMaxSlopeDeg));
-                if (nNorm.y < kMinUpDot)
-                {
-                    continue;
-                }
-
-                NavTriangle tri;
-                tri.mA = a;
-                tri.mB = b;
-                tri.mC = c;
-                tri.mCenter = (a + b + c) / 3.0f;
-                tri.mArea = 0.5f * dblArea;
-
-                const int32_t triIdx = (int32_t)outData.mTriangles.size();
-                outData.mTriangles.push_back(tri);
-
-                auto addEdge = [&](uint32_t v0, uint32_t v1)
-                {
-                    uint32_t gv0 = v0 + globalVertexBase;
-                    uint32_t gv1 = v1 + globalVertexBase;
-                    uint32_t lo = std::min(gv0, gv1);
-                    uint32_t hi = std::max(gv0, gv1);
-                    uint64_t key = ((uint64_t)lo << 32) | uint64_t(hi);
-                    edgeMap[key].push_back(triIdx);
-                };
-
-                addEdge(ia, ib);
-                addEdge(ib, ic);
-                addEdge(ic, ia);
-            }
-
-            globalVertexBase += numVertices;
-        }
-
-        for (auto& kv : edgeMap)
-        {
-            auto& tris = kv.second;
-            if (tris.size() == 2)
-            {
-                const int32_t a = tris[0];
-                const int32_t b = tris[1];
-                outData.mTriangles[a].mNeighbors.push_back(b);
-                outData.mTriangles[b].mNeighbors.push_back(a);
-            }
-        }
-
-        // Strict mode: shared-edge topology only (no proximity links).
-        return !outData.mTriangles.empty();
-    }
-
-    static int32_t FindClosestTriangle(const NavBuildData& navData, const glm::vec3& p)
-    {
-        int32_t bestIdx = -1;
-        float bestDistSq = FLT_MAX;
-
-        for (int32_t i = 0; i < (int32_t)navData.mTriangles.size(); ++i)
-        {
-            const NavTriangle& t = navData.mTriangles[i];
-            const glm::vec3 cp = ClosestPointOnTriangle(p, t.mA, t.mB, t.mC);
-            const glm::vec3 d = cp - p;
-            const float dsq = glm::dot(d, d);
-            if (dsq < bestDistSq)
-            {
-                bestDistSq = dsq;
-                bestIdx = i;
-            }
-        }
-
-        return bestIdx;
-    }
-
     struct RecastNavData
     {
         dtNavMesh* mNavMesh = nullptr;
@@ -291,8 +87,8 @@ namespace
         std::vector<StaticMesh3D*> navMeshes;
         world->FindNodes<StaticMesh3D>(navMeshes);
 
-        std::vector<Box3D*> navBounds;
-        world->FindNodes<Box3D>(navBounds);
+        std::vector<NavMesh3D*> navBounds;
+        world->FindNodes<NavMesh3D>(navBounds);
 
         struct NavBoundsEntry
         {
@@ -305,23 +101,20 @@ namespace
         };
         std::vector<NavBoundsEntry> activeBounds;
 
-        for (Box3D* box : navBounds)
+        for (NavMesh3D* navBox : navBounds)
         {
-            if (box == nullptr || !box->IsNavBounds())
+            if (navBox == nullptr || !navBox->IsNavBounds())
             {
                 continue;
             }
 
             NavBoundsEntry e;
-            e.invTransform = glm::inverse(box->GetTransform());
-            e.halfExtents = box->GetExtents() * 0.5f;
-            NavMesh3D* navBox = box->As<NavMesh3D>();
-            // If this is a legacy Box3D nav bounds volume, allow overlay by default.
-            // NavMesh3D uses its explicit Nav Overlay toggle.
-            e.overlay = (navBox != nullptr) ? navBox->IsNavOverlayEnabled() : true;
-            e.negator = (navBox != nullptr) ? navBox->IsNavNegatorEnabled() : false;
-            e.cullWalls = (navBox != nullptr) ? navBox->IsCullWallsEnabled() : false;
-            e.wallCullThreshold = (navBox != nullptr) ? navBox->GetWallCullThreshold() : 0.2f;
+            e.invTransform = glm::inverse(navBox->GetTransform());
+            e.halfExtents = navBox->GetExtents() * 0.5f;
+            e.overlay = navBox->IsNavOverlayEnabled();
+            e.negator = navBox->IsNavNegatorEnabled();
+            e.cullWalls = navBox->IsCullWallsEnabled();
+            e.wallCullThreshold = navBox->GetWallCullThreshold();
             activeBounds.push_back(e);
         }
 
@@ -2003,6 +1796,7 @@ Node* World::SpawnDefaultRoot()
 
     return mRootNode.Get();
 }
+
 
 
 
