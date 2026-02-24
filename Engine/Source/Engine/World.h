@@ -64,10 +64,6 @@ public:
     bool FindNavPath(glm::vec3 start, glm::vec3 end, std::vector<glm::vec3>& outPath);
     bool FindRandomNavPoint(glm::vec3& outPoint);
     bool FindClosestNavPoint(glm::vec3 inPoint, glm::vec3& outPoint);
-    const std::string& GetNavMeshStatus() const;
-    const std::string& GetNavMeshPath() const;
-    void SetNavMeshStatus(const std::string& status, const std::string& path);
-
     void Clear();
 
     int32_t GetIndex() const;
@@ -228,7 +224,5 @@ private:
     std::vector<PrimitivePair> mCurrentOverlaps;
     std::vector<PrimitivePair> mPreviousOverlaps;
 
-    std::string mNavMeshStatus = "Uninitialized";
-    std::string mNavMeshPath;
-
 };
+
